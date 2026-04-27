@@ -1,0 +1,42 @@
+# Firebase & Secrets
+key.json
+*.json
+!slots_esp32.json
+!package.json
+
+# Local Config & Backups
+last_ip.txt
+last_ip_backup.txt
+*_backup.py
+*_backup.cpp
+*_old.cpp
+*_old.ini
+main_fb.cpp
+main_old.cpp
+
+# PlatformIO
+.pio
+.vscode
+*.elf
+*.bin
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# OS Specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Data & Simulator (Loloskan)
+# reference_esp32.npz, diagram.json, wokwi.toml are now allowed
