@@ -73,6 +73,7 @@ void setup() {
       if (s) {
         s->set_brightness(s, 1);
         s->set_contrast(s, 1);
+        // s->set_hmirror(s, 1); // Buka komen ini jika ingin flip horizontal di hardware
       }
       Serial.println("CAMERA OK");
     }

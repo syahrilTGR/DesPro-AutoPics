@@ -88,6 +88,9 @@ ESP32_IP    = discover_esp_ip()
 STREAM_URL  = f"http://{ESP32_IP}/cam-lo.jpg"
 SNAP_URL    = f"http://{ESP32_IP}/cam-lo.jpg"
 
+# ── Konfigurasi Visual ────────────────────────
+FLIP_HORIZONTAL = True  # Set True jika gambar terbalik kiri-kanan
+
 # ── Firebase ───────────────────────────────────
 FIREBASE_CRED_PATH   = "key.json"  # ← file JSON dari Firebase Console
 FIREBASE_DB_URL      = "https://parking-600df-default-rtdb.asia-southeast1.firebasedatabase.app/"
@@ -313,6 +316,11 @@ class StreamReader:
                         if not self.connected: 
                             print(f"🔗 Terhubung (Keep-Alive): {self.url}")
                         self.connected = True
+                        
+                        # Flip jika diperlukan
+                        if FLIP_HORIZONTAL:
+                            frame = cv2.flip(frame, 1)
+                            
                         with self._lock: self._frame = frame
                     else:
                         # Jika decode gagal (gambar rusak), jangan langsung DC

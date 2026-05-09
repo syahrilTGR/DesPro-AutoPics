@@ -48,3 +48,12 @@ AutoPics menerapkan skema **Hybrid Tapping** (Dual Tapping) untuk memastikan int
 
 ---
 *Laporan ini disusun untuk mendokumentasikan perancangan sistem AutoPics secara menyeluruh bagi keperluan akademis maupun teknis.*
+
+monitor ESP32 Gate, perintahnya adalah:
+
+bash
+~/.platformio/penv/bin/pio device monitor -p /dev/cu.usbserial-0001 -b 115200
+Dan untuk ESP32-CAM:
+
+bash
+~/.platformio/penv/bin/pio device monitor -p /dev/cu.usbserial-A5069RR4 -b 115200
