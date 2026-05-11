@@ -21,7 +21,7 @@ MFRC522 rfidMob(SS_MOB, RST_PIN);
 MFRC522 rfidExit(SS_EXIT, RST_PIN);
 
 // --- KONFIGURASI SISTEM ---
-const int DISTANCE_THRESHOLD = 8;
+const int DISTANCE_THRESHOLD = 2;
 const unsigned long GATE_HOLD_TIME = 5000;
 const unsigned long SCAN_INTERVAL = 100;
 const int TARIF_PER_JAM = 2000; // Contoh tarif Rp 2.000 per jam
@@ -215,10 +215,22 @@ void setup() {
   }
   Firebase.setStreamCallback(fbdo, streamCb, [](bool t){});
 
+  // CRITICAL FOR MULTI-SPI: Set semua pin SS (SDA) sebagai OUTPUT dan set HIGH (Inaktif) 
+  // sebelum memanggil PCD_Init() agar tidak terjadi tabrakan/kolisi bus SPI!
+  pinMode(SS_MOT, OUTPUT);
+  pinMode(SS_MOB, OUTPUT);
+  pinMode(SS_EXIT, OUTPUT);
+  digitalWrite(SS_MOT, HIGH);
+  digitalWrite(SS_MOB, HIGH);
+  digitalWrite(SS_EXIT, HIGH);
+
   SPI.begin();
   rfidMot.PCD_Init();
+  delay(50);
   rfidMob.PCD_Init();
+  delay(50);
   rfidExit.PCD_Init();
+  delay(50);
   Serial.println("RFID Init OK");
 
   for (int i = 0; i < 3; i++) {
