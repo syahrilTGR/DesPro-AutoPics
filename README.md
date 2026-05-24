@@ -68,5 +68,27 @@ Anda dapat mengatur koordinat slot parkir langsung melalui file `slots_esp32.jso
 
 ---
 
+## 🛠️ Catatan Khusus Pengembang & Pemecahan Masalah
+
+Untuk memastikan kelancaran pengembangan di masa depan, berikut adalah beberapa poin optimasi penting yang telah diterapkan pada sistem:
+
+### 1. Masalah Upload di macOS (Termios Error)
+*   **Masalah**: Flashing firmware pada macOS seringkali mengalami kegagalan `termios.error: (22, 'Invalid argument')` karena *driver* serial USB tidak mendukung penggantian kecepatan baud secara dinamis oleh `esptool.py`.
+*   **Solusi**: Kecepatan unggah dikunci secara stabil pada **`upload_speed = 115200`** di dalam `platformio.ini` untuk lingkungan `esp32dev` dan `esp32cam`.
+
+### 2. Jaringan & Koneksi NTP (Penting untuk SSL)
+*   **Masalah**: ESP32 menggunakan koneksi aman HTTPS (SSL) untuk berkomunikasi dengan Firebase. Agar jabat tangan SSL (*SSL Handshake*) berhasil, waktu internal ESP32 harus sinkron dengan waktu nyata internet. Jika sinkronisasi NTP gagal, koneksi SSL akan ditolak oleh Firebase (Error: `Failed to initialize the SSL layer`).
+*   **Solusi**: ESP32 diprogram menggunakan server lokal **`id.pool.ntp.org`** dan memblokir booting secara aman sampai waktu terverifikasi sinkron. Jika Anda mengalami hambatan atau titik-titik `NTP Sync...` yang lama, pastikan untuk **menghubungkan ESP32 ke Hotspot/Tethering HP Anda** (karena provider seluler tidak memblokir port UDP 123 untuk NTP).
+
+### 3. Pemisahan Jalur Data Firebase (Stream vs Query)
+*   **Solusi**: Koneksi *Streaming* di latar belakang menggunakan objek data terdedikasi **`streamFbdo`**, sedangkan operasi *Get/Set* (baca saldo & tulis status) menggunakan objek **`fbdo`**. Pemisahan ini mencegah terputusnya pemantauan slot parkir asinkron secara tiba-tiba ketika kartu RFID ditap.
+
+### 4. Optimasi Memori RAM (Heap) & Jarak Threshold
+*   **Arus & Memori**: Memori buffer respons Firebase dibatasi sebesar **1KB** (`setResponseSize(1024)`) untuk mencegah fragmentasi RAM di ESP32. Urutan penulisan Firebase diselesaikan *sebelum* servo berputar untuk menjaga chip WiFi dari kejutan penurunan tegangan (*voltage dip*).
+*   **Sensor Jarak**: Batas jarak pemicu sensor ultrasonik miniatur diatur pada **$\le$ 3 cm**.
+
+---
+
 ## 📝 Catatan
 Proyek ini dikembangkan untuk keperluan akademis dalam perancangan sistem parkir modern berbasis IoT dan Computer Vision.
+
