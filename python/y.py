@@ -162,24 +162,21 @@ firebase_ok = False
 db_ref      = None
 
 def init_firebase():
-    global firebase_ok, db_ref
+    global firebase_ok
     try:
-        import firebase_admin
-        from firebase_admin import credentials, db
-        if not os.path.exists(FIREBASE_CRED_PATH):
-            print(f"⚠️  File kredensial tidak ditemukan: {FIREBASE_CRED_PATH}")
+        import requests
+        # Lakukan tes koneksi singkat ke Firebase RTDB
+        test_url = f"{FIREBASE_DB_URL.rstrip('/')}/.json"
+        resp = requests.get(test_url, params={"shallow": "true"}, timeout=4)
+        if resp.status_code == 200:
+            firebase_ok = True
+            print(f"🔥 Firebase terhubung (REST API Mode) → {FIREBASE_DB_URL}")
+            return True
+        else:
+            print(f"⚠️  Gagal terhubung ke Firebase RTDB: HTTP {resp.status_code}")
             return False
-        cred = credentials.Certificate(FIREBASE_CRED_PATH)
-        firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
-        db_ref      = db.reference("/")
-        firebase_ok = True
-        print(f"🔥 Firebase terhubung → {FIREBASE_DB_URL}")
-        return True
-    except ImportError:
-        print("⚠️  firebase-admin belum diinstall → pip install firebase-admin")
-        return False
     except Exception as e:
-        print(f"⚠️  Firebase gagal: {e}")
+        print(f"⚠️  Firebase REST connection failed: {e}")
         return False
 
 # ╔══════════════════════════════════════════════╗
@@ -189,17 +186,21 @@ class FirebaseSender:
     def __init__(self):
         self._queue      = {}
         self._lock       = threading.Lock()
+        self._event      = threading.Event()
         self._last_sent  = {}
-        self._last_time  = 0
         self.running     = True
         self.kirim_count = 0
         threading.Thread(target=self._loop, daemon=True).start()
 
     def update(self, hasil: dict, total_slot: int):
         if not firebase_ok: return
+        has_change = False
         with self._lock:
             for sid, (terisi, skor) in hasil.items():
-                if self._last_sent.get(sid) != terisi:
+                last_state = self._last_sent.get(sid)
+                last_terisi = last_state[0] if last_state else None
+                
+                if last_terisi != terisi:
                     # Cari data tipe kendaraan dari daftar slot global
                     slot = next((s for s in slots if s["id"] == sid), None)
                     if not slot: continue
@@ -209,28 +210,37 @@ class FirebaseSender:
                         "tipe"      : slot.get("tipe", "mobil"), # default mobil
                         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
+                    has_change = True
+        
+        if has_change:
+            self._event.set()
 
     def _loop(self):
         while self.running:
-            time.sleep(0.2)
-            now = time.time()
-            if now - self._last_time < FIREBASE_INTERVAL: continue
+            # Tunggu sampai ada update baru atau timeout 2 detik untuk safety sync
+            self._event.wait(timeout=2.0)
+            self._event.clear()
+            
             with self._lock:
                 if not self._queue: continue
                 batch = dict(self._queue)
                 self._queue.clear()
+            
             self._kirim(batch)
-            self._last_time = now
 
     def _kirim(self, batch: dict):
         try:
-            from firebase_admin import db
+            import requests
             for sid, data in batch.items():
                 tipe = data.pop("tipe")
-                # Kirim ke folder sub-jenis: parkir/slots/mobil/A1
-                db.reference(f"{FIREBASE_PATH_SLOTS}/{tipe}/{sid}").set(data)
-                self._last_sent[sid] = (data["terisi"], tipe)
-                self.kirim_count += 1
+                # Kirim ke folder sub-jenis: parkir/slots/mobil/A1.json
+                url = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SLOTS}/{tipe}/{sid}.json"
+                resp = requests.put(url, json=data, timeout=5)
+                if resp.status_code == 200:
+                    self._last_sent[sid] = (data["terisi"], tipe)
+                    self.kirim_count += 1
+                else:
+                    print(f"⚠️  Gagal update slot {sid}: HTTP {resp.status_code}")
             
             # Hitung ringkasan terpisah (mobil vs motor)
             summary_data = {
@@ -250,30 +260,34 @@ class FirebaseSender:
                 d = summary_data[tipe]
                 if d["total"] > 0:
                     d["persen"] = round(d["terisi"] / d["total"] * 100, 1)
-                    db.reference(f"{FIREBASE_PATH_SUMMARY}/{tipe}").set({
+                    url_sum = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SUMMARY}/{tipe}.json"
+                    sum_payload = {
                         "total"      : d["total"],
                         "terisi"     : d["terisi"],
                         "kosong"     : d["kosong"],
                         "persen_terisi": d["persen"],
                         "updated_at" : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
+                    }
+                    requests.put(url_sum, json=sum_payload, timeout=5)
 
             print(f"🔥 Firebase update ({len(batch)} slot updated)")
 
         except Exception as e:
-            print(f"⚠️  Firebase error: {e}")
+            print(f"⚠️  Firebase REST error: {e}")
 
     def reset_slot(self, slot_id: str):
         if not firebase_ok: return
         try:
-            from firebase_admin import db
+            import requests
             # Cari tipe dulu sebelum hapus
             slot = next((s for s in slots if s["id"] == slot_id), None)
             if slot:
                 tipe = slot.get("tipe", "mobil")
-                db.reference(f"{FIREBASE_PATH_SLOTS}/{tipe}/{slot_id}").delete()
+                url = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SLOTS}/{tipe}/{slot_id}.json"
+                requests.delete(url, timeout=5)
             self._last_sent.pop(slot_id, None)
-        except Exception: pass
+        except Exception as e:
+            print(f"⚠️  Gagal menghapus slot {slot_id}: {e}")
 
     def stop(self):
         self.running = False
