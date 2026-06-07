@@ -6,6 +6,8 @@
 #include <WiFiManager.h>
 #include "esp_camera.h"
 
+#define LED_PIN 33 // Pin LED Indikator Merah bawaan ESP32-CAM (Active Low)
+
 
 WebServer server(80);
 
@@ -53,6 +55,9 @@ WiFiUDP udp;
 const int udpPort = 4210;
 
 void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH); // Matikan LED awal (Active Low)
+
   setCpuFrequencyMhz(240); // CPU kencang agar encoding cepat
   btStop();                // Matikan Bluetooth (Hemat RAM & Daya)
 
@@ -105,11 +110,15 @@ void setup() {
 }
 
 unsigned long lastBeacon = 0;
+unsigned long lastLedBlink = 0;
+bool ledState = false;
 
 void loop() {
   wm.process();
   
   if (WiFi.status() == WL_CONNECTED) {
+    digitalWrite(LED_PIN, LOW); // Nyala terus saat terkoneksi (Active Low)
+
     server.handleClient();
 
     // Auto-resume Beacon jika sudah 10 detik tidak ada request
@@ -126,6 +135,13 @@ void loop() {
       udp.beginPacket(broadcastIP, udpPort);
       udp.print("AUTOPICS_ESP32_HERE");
       udp.endPacket();
+    }
+  } else {
+    // Belum terkoneksi WiFi -> Kedipkan LED setiap 500ms
+    if (millis() - lastLedBlink >= 500) {
+      lastLedBlink = millis();
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState ? LOW : HIGH);
     }
   }
 
