@@ -46,16 +46,21 @@ Sistem ini telah dioptimasi untuk performa maksimal pada perangkat edge:
 
 ### 3. Python Client (Vision Engine)
 -   Pastikan sudah menginstal Python 3.10+.
--   Buat virtual environment:
+-   Buat dan aktifkan *Virtual Environment* (venv):
     ```bash
+    # Buat venv baru (hanya dilakukan sekali)
     python -m venv venv
-    source venv/bin/activate  # (Mac/Linux)
+
+    # Aktifkan venv (Lakukan ini setiap kali membuka terminal baru)
+    source venv/bin/activate     # Untuk macOS / Linux
+    venv\Scripts\activate        # Untuk Windows (Command Prompt)
+    .\venv\Scripts\Activate.ps1  # Untuk Windows (PowerShell)
     ```
--   Instal dependensi:
+-   Instal semua dependensi dari file requirements:
     ```bash
-    pip install opencv-python numpy requests torch firebase-admin
+    pip install -r requirements.txt
     ```
--   Letakkan file kredensial Firebase Anda di `python/key.json`.
+-   *(Opsional)* Anda dapat memasukkan Web API Key Firebase Anda langsung ke dalam baris kode di `python/y.py` agar sistem dapat login secara resmi.
 -   Jalankan engine:
     ```bash
     python python/y.py

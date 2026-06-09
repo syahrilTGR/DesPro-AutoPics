@@ -9,6 +9,8 @@
 // --- KONFIGURASI FIREBASE ---
 #define API_KEY "AIzaSyB7lfoTolV2CUvIW47_JeaYnwobw1RCEHg"
 #define DATABASE_URL "parking-600df-default-rtdb.asia-southeast1.firebasedatabase.app"
+#define USER_EMAIL "espgate@autopics.com"
+#define USER_PASSWORD "anjaymabar"
 
 // --- KONFIGURASI RFID ---
 #define RST_PIN   4
@@ -21,7 +23,7 @@ MFRC522 rfidMob(SS_MOB, RST_PIN);
 MFRC522 rfidExit(SS_EXIT, RST_PIN);
 
 // --- KONFIGURASI SISTEM ---
-const int DISTANCE_THRESHOLD = 3;
+const int DISTANCE_THRESHOLD = 15; // Jarak sensor ultrasonik (dinaikkan agar mudah saat testing)
 const unsigned long GATE_HOLD_TIME = 5000;
 const unsigned long SCAN_INTERVAL = 100;
 const int TARIF_PER_JAM = 2000; // Contoh tarif Rp 2.000 per jam
@@ -35,15 +37,18 @@ struct Gate {
   int* availCount;
   bool isExit;
   MFRC522* rfid;
+  int defaultDist;
+  unsigned long stableEmptyTime;
+  bool hasEntered;
 };
 
 int availMot = 0;
 int availMob = 0;
 
 Gate gts[3] = {
-  {"MOTOR_IN", 32, 33, 13, Servo(), false, 0, &availMot, false, &rfidMot},
-  {"MOBIL_IN", 27, 26, 12, Servo(), false, 0, &availMob, false, &rfidMob},
-  {"EXIT_ALL", 16, 17, 14, Servo(), false, 0, nullptr,   true,  &rfidExit}
+  {"MOTOR_IN", 32, 33, 13, Servo(), false, 0, &availMot, false, &rfidMot, 5,  0, false},
+  {"MOBIL_IN", 27, 26, 12, Servo(), false, 0, &availMob, false, &rfidMob, 11, 0, false},
+  {"EXIT_ALL", 16, 17, 14, Servo(), false, 0, nullptr,   true,  &rfidExit, 10, 0, false}
 };
 
 WiFiManager wm;
@@ -81,11 +86,21 @@ void streamCb(StreamData data) {
 }
 
 long getD(int t, int e) {
-  digitalWrite(t, LOW); delayMicroseconds(2);
-  digitalWrite(t, HIGH); delayMicroseconds(10);
-  digitalWrite(t, LOW);
-  long dur = pulseIn(e, HIGH, 20000);
-  return (dur == 0) ? 999 : dur * 0.034 / 2;
+  long d1, d2, d3;
+  auto readPulse = [&]() -> long {
+    digitalWrite(t, LOW); delayMicroseconds(2);
+    digitalWrite(t, HIGH); delayMicroseconds(10);
+    digitalWrite(t, LOW);
+    long dur = pulseIn(e, HIGH, 20000);
+    return (dur == 0) ? 999 : dur * 0.034 / 2;
+  };
+  d1 = readPulse(); delay(2);
+  d2 = readPulse(); delay(2);
+  d3 = readPulse();
+  
+  if ((d1 >= d2 && d1 <= d3) || (d1 >= d3 && d1 <= d2)) return d1;
+  if ((d2 >= d1 && d2 <= d3) || (d2 >= d3 && d2 <= d1)) return d2;
+  return d3;
 }
 
 String getUID(MFRC522* rfid) {
@@ -103,6 +118,8 @@ void openGate(Gate &g, unsigned long now) {
   g.sv.write(90);
   g.isOpen = true;
   g.lastOpen = now;
+  g.hasEntered = false;
+  g.stableEmptyTime = 0;
 }
 
 void processEntrance(Gate &g, String uid, unsigned long now) {
@@ -215,16 +232,14 @@ void setup() {
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
   
-  // Lakukan pendaftaran anonim ke Google Auth (sekarang dijamin sukses karena waktu NTP sudah sinkron di tahun 2026!)
-  Serial.print("Firebase Auth Sign Up...");
-  if (Firebase.signUp(&config, &auth, "", "")) {
-    Serial.println(" OK (Auth Sukses!)");
-  } else {
-    Serial.printf(" ⚠️ Gagal! Alasan: %s\n", config.signer.signupError.message.c_str());
-  }
+  // Otentikasi menggunakan Email & Password
+  auth.user.email = USER_EMAIL;
+  auth.user.password = USER_PASSWORD;
 
+  Serial.print("Menghubungkan ke Firebase Auth...");
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
+  Serial.println(" OK");
   
   // Batasi alokasi buffer respon Firebase untuk menghemat memori RAM (mencegah fragmentasi & SSL timeout)
   fbdo.setResponseSize(1024);
@@ -294,38 +309,41 @@ void loop() {
       Serial.printf("📡 [RFID DEBUG] Kartu Terdeteksi di %s! UID: %s\n", g.name, detectedUid.c_str());
     }
 
-    if (dist > 0 && dist <= DISTANCE_THRESHOLD) {
-      if (!g.isOpen) {
-        if (rfidPresent) {
-          if (g.isExit) {
-            processExit(g, detectedUid, now);
-          } else {
-            processEntrance(g, detectedUid, now);
-          }
-        } else if (g.rfid != nullptr && g.rfid->PICC_IsNewCardPresent() && g.rfid->PICC_ReadCardSerial()) {
-          String uid = getUID(g.rfid);
-          g.rfid->PICC_HaltA();
-          if (g.isExit) {
-            processExit(g, uid, now);
-          } else {
-            processEntrance(g, uid, now);
-          }
+    if (!g.isOpen) {
+      if (rfidPresent) {
+        if (g.isExit) {
+          processExit(g, detectedUid, now);
+        } else {
+          processEntrance(g, detectedUid, now);
         }
+      }
+    } else {
+      // LOGIKA PENUTUPAN GERBANG PINTAR
+      if (abs(dist - g.defaultDist) > 1 && dist != 999) {
+        g.hasEntered = true; // Kendaraan terdeteksi melintas
+        g.stableEmptyTime = 0; // Reset timer kosong
       } else {
-        g.lastOpen = now;
+        if (g.stableEmptyTime == 0) g.stableEmptyTime = now;
+        
+        // 1. Tutup jika kendaraan sudah lewat dan sensor stabil kosong selama 1.5 detik
+        if (g.hasEntered && (now - g.stableEmptyTime >= 1500)) {
+          Serial.printf("🔒 %s: CLOSE (Kendaraan telah melintas)\n", g.name);
+          g.sv.write(0);
+          g.isOpen = false;
+        }
+        // 2. Tutup jika timeout (misal ngetap kartu tapi tidak jadi masuk)
+        else if (!g.hasEntered && (now - g.lastOpen >= GATE_HOLD_TIME)) {
+          Serial.printf("🔒 %s: CLOSE (Timeout, kendaraan tidak masuk)\n", g.name);
+          g.sv.write(0);
+          g.isOpen = false;
+        }
       }
     }
     
     currentIdx = (currentIdx + 1) % 3;
   }
 
-  for (int i = 0; i < 3; i++) {
-    if (gts[i].isOpen && (now - gts[i].lastOpen >= GATE_HOLD_TIME)) {
-      Serial.printf("🔒 %s: CLOSE\n", gts[i].name);
-      gts[i].sv.write(0);
-      gts[i].isOpen = false;
-    }
-  }
+  // Auto-close sudah di-handle oleh logika gerbang pintar di dalam polling loop di atas
 
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');

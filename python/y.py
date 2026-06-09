@@ -85,8 +85,8 @@ def discover_esp_ip(fallback_ip="10.128.17.172",
 
 # ── ESP32-CAM ─────────────────────────────────
 ESP32_IP    = discover_esp_ip()
-STREAM_URL  = f"http://{ESP32_IP}/cam-lo.jpg"
-SNAP_URL    = f"http://{ESP32_IP}/cam-lo.jpg"
+STREAM_URL  = f"http://{ESP32_IP}/cam-mid.jpg"
+SNAP_URL    = f"http://{ESP32_IP}/cam-mid.jpg"
 
 # ── Konfigurasi Visual ────────────────────────
 FLIP_HORIZONTAL = True  # Set True jika gambar terbalik kiri-kanan
@@ -97,6 +97,11 @@ FIREBASE_DB_URL      = "https://parking-600df-default-rtdb.asia-southeast1.fireb
 FIREBASE_PATH_SLOTS  = "parkir/slots"
 FIREBASE_PATH_SUMMARY= "parkir/ringkasan"
 FIREBASE_INTERVAL    = 2.0
+
+# ── Autentikasi Firebase (Opsional) ────────────
+FIREBASE_API_KEY = "AIzaSyB7lfoTolV2CUvIW47_JeaYnwobw1RCEHg"
+FIREBASE_EMAIL   = "server@autopics.com"
+FIREBASE_PASS    = "anjaymabar"
 
 # ══════════════════════════════════════════════
 #  GPU SETUP
@@ -154,20 +159,42 @@ show_debug    = False
 # State tambahan untuk pemilihan tipe kendaraan
 sedang_pilih_tipe = False
 last_rect         = None
+flash_level       = 0
 
 # ╔══════════════════════════════════════════════╗
 # ║              FIREBASE SETUP                  ║
 # ╚══════════════════════════════════════════════╝
 firebase_ok = False
+firebase_id_token = None
 db_ref      = None
 
 def init_firebase():
-    global firebase_ok
+    global firebase_ok, firebase_id_token
     try:
         import requests
-        # Lakukan tes koneksi singkat ke Firebase RTDB
+        
+        # 1. Coba login jika API Key sudah diisi
+        if FIREBASE_API_KEY != "MASUKKAN_WEB_API_KEY_DISINI" and FIREBASE_API_KEY.strip():
+            print(f"🔐 Melakukan Autentikasi Firebase sebagai {FIREBASE_EMAIL}...")
+            auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+            payload = {"email": FIREBASE_EMAIL, "password": FIREBASE_PASS, "returnSecureToken": True}
+            resp = requests.post(auth_url, json=payload, timeout=5)
+            if resp.status_code == 200:
+                firebase_id_token = resp.json().get("idToken")
+                print("✅ Autentikasi Berhasil!")
+            else:
+                err_msg = resp.json().get('error', {}).get('message', 'Unknown Error')
+                print(f"❌ Autentikasi Gagal: {err_msg}")
+                # Tetap lanjut, mungkin DB-nya diset public read/write
+        else:
+            print("⚠️  API Key Firebase kosong. Menggunakan mode Public tanpa autentikasi.")
+
+        # 2. Lakukan tes koneksi singkat ke Firebase RTDB
         test_url = f"{FIREBASE_DB_URL.rstrip('/')}/.json"
-        resp = requests.get(test_url, params={"shallow": "true"}, timeout=4)
+        params = {"shallow": "true"}
+        if firebase_id_token: params["auth"] = firebase_id_token
+        
+        resp = requests.get(test_url, params=params, timeout=4)
         if resp.status_code == 200:
             firebase_ok = True
             print(f"🔥 Firebase terhubung (REST API Mode) → {FIREBASE_DB_URL}")
@@ -231,11 +258,22 @@ class FirebaseSender:
     def _kirim(self, batch: dict):
         try:
             import requests
+            params = {}
+            if firebase_id_token: params["auth"] = firebase_id_token
+            
             for sid, data in batch.items():
                 tipe = data.pop("tipe")
                 # Kirim ke folder sub-jenis: parkir/slots/mobil/A1.json
                 url = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SLOTS}/{tipe}/{sid}.json"
-                resp = requests.put(url, json=data, timeout=5)
+                resp = requests.put(url, json=data, params=params, timeout=5)
+                
+                # Coba login ulang jika token expired (401 Unauthorized)
+                if resp.status_code == 401 and FIREBASE_API_KEY != "MASUKKAN_WEB_API_KEY_DISINI":
+                    print("⚠️  Token Firebase kedaluwarsa. Mencoba login ulang...")
+                    if init_firebase() and firebase_id_token:
+                        params["auth"] = firebase_id_token
+                        resp = requests.put(url, json=data, params=params, timeout=5)
+
                 if resp.status_code == 200:
                     self._last_sent[sid] = (data["terisi"], tipe)
                     self.kirim_count += 1
@@ -268,7 +306,7 @@ class FirebaseSender:
                         "persen_terisi": d["persen"],
                         "updated_at" : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
-                    requests.put(url_sum, json=sum_payload, timeout=5)
+                    requests.put(url_sum, json=sum_payload, params=params, timeout=5)
 
             print(f"🔥 Firebase update ({len(batch)} slot updated)")
 
@@ -279,12 +317,15 @@ class FirebaseSender:
         if not firebase_ok: return
         try:
             import requests
+            params = {}
+            if firebase_id_token: params["auth"] = firebase_id_token
+            
             # Cari tipe dulu sebelum hapus
             slot = next((s for s in slots if s["id"] == slot_id), None)
             if slot:
                 tipe = slot.get("tipe", "mobil")
                 url = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SLOTS}/{tipe}/{slot_id}.json"
-                requests.delete(url, timeout=5)
+                requests.delete(url, params=params, timeout=5)
             self._last_sent.pop(slot_id, None)
         except Exception as e:
             print(f"⚠️  Gagal menghapus slot {slot_id}: {e}")
@@ -544,6 +585,9 @@ def gambar_hud(frame, hasil, fps, fps_gpu):
     cv2.rectangle(frame, (0, h - 38), (w, h), (15, 15, 30), -1)
     info = f"Slot:{total}  Kosong:{kosong}  Terisi:{terisi}  FPS:{fps:.1f}  Threshold:{THRESHOLD_SCORE:.2f}"
     cv2.putText(frame, info, (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+    
+    # Info Senter
+    cv2.putText(frame, f"[F] Senter Lvl:{flash_level}", (w - 140, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
     return frame
 
 def gambar_sementara(frame):
@@ -576,13 +620,16 @@ def mouse_cb(event, x, y, flags, param):
 
 def main():
     global mode, menggambar, kotak_tmp, show_debug, THRESHOLD_SCORE, terkalibrasi
-    global sedang_pilih_tipe, last_rect
+    global sedang_pilih_tipe, last_rect, flash_level
     init_firebase()
     load_slots(); load_referensi()
     fb_sender = FirebaseSender()
     reader = StreamReader(STREAM_URL).start()
     WIN = "AUTOPICS – ESP32-CAM"
-    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL); cv2.resizeWindow(WIN, 900, 600); cv2.setMouseCallback(WIN, mouse_cb, fb_sender)
+    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WIN, 900, 600)
+    cv2.setMouseCallback(WIN, mouse_cb, fb_sender)
+
     t_prev = time.time(); fps_hist = deque(maxlen=20); hasil = {}; frame = None
     
     print("⏳ Menunggu frame dari kamera...")
@@ -652,6 +699,23 @@ def main():
         elif key == ord('3'): reader.update_url(f"http://{ESP32_IP}/cam-lo.jpg")
         elif key == ord('4'): reader.update_url(f"http://{ESP32_IP}/cam-mid.jpg")
         elif key == ord('5'): reader.update_url(f"http://{ESP32_IP}/cam-hi.jpg")
+
+        # Hotkey Senter (Cycle Level 0-3)
+        elif key == ord('f'):
+            flash_level = (flash_level + 1) % 4
+            pwm_map = {0: 0, 1: 10, 2: 50, 3: 255}
+            val = pwm_map.get(flash_level, 0)
+            
+            def send_flash():
+                try:
+                    import requests
+                    requests.get(f"http://{ESP32_IP}/flash?val={val}", timeout=2)
+                    print(f"🔦 Senter Level: {flash_level} (PWM: {val})")
+                except Exception as e:
+                    print(f"⚠️  Gagal mengatur senter: {e}")
+            
+            import threading
+            threading.Thread(target=send_flash, daemon=True).start()
 
         # Batasi loop agar tidak memakan CPU (FPS Cap ~20 FPS)
         time.sleep(0.05)

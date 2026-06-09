@@ -7,12 +7,12 @@
 #include "esp_camera.h"
 
 #define LED_PIN 33 // Pin LED Indikator Merah bawaan ESP32-CAM (Active Low)
-
+#define FLASH_PIN 4 // Pin LED Flash/Torch depan ESP32-CAM (Active High)
 
 WebServer server(80);
 
 static auto loRes = esp32cam::Resolution::find(320, 240);
-static auto midRes = esp32cam::Resolution::find(480, 360); // Gunakan 360p (480x360)
+static auto midRes = esp32cam::Resolution::find(640, 480); // Gunakan VGA (640x480) karena native OV2640
 static auto hiRes = esp32cam::Resolution::find(800, 600);
 
 bool stopBeacon = false;
@@ -56,7 +56,12 @@ const int udpPort = 4210;
 
 void setup() {
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH); // Matikan LED awal (Active Low)
+  digitalWrite(LED_PIN, HIGH); // Matikan LED merah awal (Active Low)
+  
+  // Konfigurasi PWM (LEDC) untuk Senter Depan
+  ledcSetup(2, 5000, 8); // Channel 2, 5 kHz, Resolusi 8-bit (0-255)
+  ledcAttachPin(FLASH_PIN, 2);
+  ledcWrite(2, 0); // Matikan Flash/Torch secara default
 
   setCpuFrequencyMhz(240); // CPU kencang agar encoding cepat
   btStop();                // Matikan Bluetooth (Hemat RAM & Daya)
@@ -68,9 +73,9 @@ void setup() {
     using namespace esp32cam;
     Config cfg;
     cfg.setPins(pins::AiThinker);
-    cfg.setResolution(loRes); // Kembali ke Lo-Res (320x240) - Paling Stabil
+    cfg.setResolution(midRes); // Gunakan mode Mid-Res (640x480) secara default
     cfg.setBufferCount(2); 
-    cfg.setJpeg(80);         
+    cfg.setJpeg(60); // Turunkan dari 80 ke 60 agar ukuran file lebih kecil & FPS lebih tinggi
 
     bool ok = Camera.begin(cfg);
     if (ok) {
@@ -105,6 +110,18 @@ void setup() {
   server.on("/cam-hi.jpg", handleJpgHi);
   server.on("/cam-mid.jpg", handleJpgMid);
 
+  server.on("/flash", []() {
+    if (server.hasArg("val")) {
+      int val = server.arg("val").toInt();
+      if (val < 0) val = 0;
+      if (val > 255) val = 255;
+      ledcWrite(2, val);
+      server.send(200, "text/plain", "Flash set to " + String(val));
+    } else {
+      server.send(400, "text/plain", "Missing val parameter");
+    }
+  });
+
   server.begin();
   Serial.println("HTTP Server started");
 }
@@ -117,7 +134,7 @@ void loop() {
   wm.process();
   
   if (WiFi.status() == WL_CONNECTED) {
-    digitalWrite(LED_PIN, LOW); // Nyala terus saat terkoneksi (Active Low)
+    digitalWrite(LED_PIN, HIGH); // Matikan LED merah (Active Low)
 
     server.handleClient();
 
@@ -137,7 +154,8 @@ void loop() {
       udp.endPacket();
     }
   } else {
-    // Belum terkoneksi WiFi -> Kedipkan LED setiap 500ms
+    // Belum terkoneksi WiFi -> Matikan senter, kedipkan LED merah setiap 500ms
+    ledcWrite(2, 0);
     if (millis() - lastLedBlink >= 500) {
       lastLedBlink = millis();
       ledState = !ledState;
