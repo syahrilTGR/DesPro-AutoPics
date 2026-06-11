@@ -1,16 +1,18 @@
 #include <Arduino.h>
+#include <time.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <WiFiClientSecure.h>
 #include <SPI.h>
 #include <MFRC522.h>
 #include <ESP32Servo.h>
 #include <WiFiManager.h>
-#include <FirebaseESP32.h>
-#include <time.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
-// --- KONFIGURASI FIREBASE ---
-#define API_KEY "AIzaSyB7lfoTolV2CUvIW47_JeaYnwobw1RCEHg"
-#define DATABASE_URL "parking-600df-default-rtdb.asia-southeast1.firebasedatabase.app"
-#define USER_EMAIL "espgate@autopics.com"
-#define USER_PASSWORD "anjaymabar"
+// --- KONFIGURASI SUPABASE ---
+#define SUPABASE_URL "https://hjxiczdakbcrnuntyrjk.supabase.co"
+#define SUPABASE_ANON_KEY "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhqeGljemRha2Jjcm51bnR5cmprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5NzUxNzMsImV4cCI6MjA5NjU1MTE3M30.Q5z5Eqeod6kd-sHhp-HOFW-vO8GMoJySo8Xopg_Vz_0"
 
 // --- KONFIGURASI RFID ---
 #define RST_PIN   4
@@ -23,10 +25,10 @@ MFRC522 rfidMob(SS_MOB, RST_PIN);
 MFRC522 rfidExit(SS_EXIT, RST_PIN);
 
 // --- KONFIGURASI SISTEM ---
-const int DISTANCE_THRESHOLD = 15; // Jarak sensor ultrasonik (dinaikkan agar mudah saat testing)
+const int DISTANCE_THRESHOLD = 15;
 const unsigned long GATE_HOLD_TIME = 5000;
 const unsigned long SCAN_INTERVAL = 100;
-const int TARIF_PER_JAM = 2000; // Contoh tarif Rp 2.000 per jam
+const unsigned long POLL_INTERVAL = 5000;
 
 struct Gate {
   const char* name;
@@ -34,7 +36,6 @@ struct Gate {
   Servo sv;
   bool isOpen;
   unsigned long lastOpen;
-  int* availCount;
   bool isExit;
   MFRC522* rfid;
   int defaultDist;
@@ -42,47 +43,126 @@ struct Gate {
   bool hasEntered;
 };
 
-int availMot = 0;
-int availMob = 0;
+int availSlots = 0; // Total slot kosong
 
 Gate gts[3] = {
-  {"MOTOR_IN", 32, 33, 13, Servo(), false, 0, &availMot, false, &rfidMot, 5,  0, false},
-  {"MOBIL_IN", 27, 26, 12, Servo(), false, 0, &availMob, false, &rfidMob, 11, 0, false},
-  {"EXIT_ALL", 16, 17, 14, Servo(), false, 0, nullptr,   true,  &rfidExit, 10, 0, false}
+  {"MOTOR_IN", 32, 33, 13, Servo(), false, 0, false, &rfidMot, 5,  0, false},
+  {"MOBIL_IN", 27, 26, 12, Servo(), false, 0, false, &rfidMob, 10, 0, false},
+  {"EXIT_ALL", 16, 17, 14, Servo(), false, 0, true,  &rfidExit, 10, 0, false}
 };
 
 WiFiManager wm;
-FirebaseData fbdo;
-FirebaseData streamFbdo; // Dedicated FirebaseData object for background Streaming!
-FirebaseAuth auth;
-FirebaseConfig config;
-
+SemaphoreHandle_t httpMutex;
 int currentIdx = 0;
 unsigned long lastScan = 0;
+unsigned long lastPoll = 0;
 
-void streamCb(StreamData data) {
-  String p = data.dataPath();
-  String type = data.dataType();
-  
-  Serial.printf("📡 [STREAM] Event masuk! Path: %s | Type: %s\n", p.c_str(), type.c_str());
+// --- UTILITY FUNGSI WAKTU ---
+String getISO8601Time() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return "";
+  char buffer[30];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S.000Z", &timeinfo);
+  return String(buffer);
+}
 
-  if (type == "int") {
-    if (p == "/mobil/kosong" || p == "/mobil") availMob = data.intData();
-    else if (p == "/motor/kosong" || p == "/motor") availMot = data.intData();
-  } 
-  else if (type == "json") {
-    FirebaseJson &json = data.jsonObject();
-    FirebaseJsonData r;
-    if (p == "/mobil") {
-      if (json.get(r, "kosong")) availMob = r.intValue;
-    } else if (p == "/motor") {
-      if (json.get(r, "kosong")) availMot = r.intValue;
-    } else if (p == "/") {
-      if (json.get(r, "mobil/kosong")) availMob = r.intValue;
-      if (json.get(r, "motor/kosong")) availMot = r.intValue;
-    }
+time_t parseISO8601(String isoStr) {
+  struct tm tm = {0};
+  // Format: 2026-06-11T09:12:00
+  sscanf(isoStr.c_str(), "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec);
+  tm.tm_year -= 1900;
+  tm.tm_mon -= 1;
+  return mktime(&tm);
+}
+
+// --- UTILITY SUPABASE REST API ---
+String execGET(String endpoint) {
+  String payload = "";
+  if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(15000)) == pdTRUE) {
+    WiFiClientSecure client;
+    client.setInsecure(); // Bypass SSL verification agar sangat cepat & hemat memori
+    HTTPClient http;
+    http.begin(client, String(SUPABASE_URL) + endpoint);
+    http.addHeader("apikey", SUPABASE_ANON_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+    http.addHeader("Connection", "close");
+    int httpCode = http.GET();
+    if (httpCode == 200) payload = http.getString();
+    http.end();
+    client.stop(); // Paksa tutup socket TCP
+    xSemaphoreGive(httpMutex);
   }
-  Serial.printf("📊 [STREAM STATUS] Mobil Kosong: %d | Motor Kosong: %d\n", availMob, availMot);
+  return payload;
+}
+
+String execPOST(String endpoint, String jsonPayload) {
+  String response = "";
+  if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(15000)) == pdTRUE) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.begin(client, String(SUPABASE_URL) + endpoint);
+    http.addHeader("apikey", SUPABASE_ANON_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("Prefer", "return=representation");
+    http.addHeader("Connection", "close");
+    int httpCode = http.POST(jsonPayload);
+    if (httpCode == 200 || httpCode == 201) response = http.getString();
+    http.end();
+    client.stop();
+    xSemaphoreGive(httpMutex);
+  }
+  return response;
+}
+
+String execPATCH(String endpoint, String jsonPayload) {
+  String response = "";
+  Serial.println("  -> [PATCH] " + endpoint);
+  
+  if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(15000)) == pdTRUE) {
+    Serial.println("  -> [PATCH] Mutex taken, connecting...");
+    WiFiClientSecure client;
+    client.setInsecure();
+    
+    HTTPClient http;
+    http.begin(client, String(SUPABASE_URL) + endpoint);
+    http.setTimeout(10000); 
+    http.addHeader("apikey", SUPABASE_ANON_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("Connection", "close");
+    
+    Serial.println("  -> [PATCH] Sending request...");
+    int httpCode = http.sendRequest("PATCH", jsonPayload);
+    Serial.printf("  -> [PATCH] httpCode: %d\n", httpCode);
+    
+    if (httpCode == 200 || httpCode == 201) {
+      Serial.println("  -> [PATCH] Reading response...");
+      response = http.getString();
+    }
+    
+    Serial.println("  -> [PATCH] Closing...");
+    http.end();
+    client.stop();
+    xSemaphoreGive(httpMutex);
+    Serial.println("  <- [PATCH] Done.");
+  } else {
+    Serial.println("  <- [RESP] Mutex Timeout!");
+  }
+  return response;
+}
+
+// --- LOGIKA PARKIR ---
+void pollParkingSlots() {
+  String response = execGET("/rest/v1/parking_slots?status=eq.EMPTY&select=slot_id");
+  if (response.length() > 0 && response != "[]") {
+    JsonDocument doc;
+    deserializeJson(doc, response);
+    availSlots = doc.size();
+  } else {
+    availSlots = 0;
+  }
 }
 
 long getD(int t, int e) {
@@ -123,137 +203,122 @@ void openGate(Gate &g, unsigned long now) {
 }
 
 void processEntrance(Gate &g, String uid, unsigned long now) {
-  if (g.availCount != nullptr && *(g.availCount) <= 0) {
+  if (availSlots <= 0) {
     Serial.printf("⚠️ %s: FULL! (Tunggu slot kosong)\n", g.name);
     return;
   }
 
-  String path = "/users/" + uid;
-  if (Firebase.getInt(fbdo, path + "/balance")) {
-    int balance = fbdo.intData();
-    
-    // Ambil status kartu untuk memastikan kartu berstatus aktif/ready
-    String status = "inactive";
-    if (Firebase.getString(fbdo, path + "/status")) {
-      status = fbdo.stringData();
-    }
-
-    if (status == "active" || status == "left") {
-      if (balance > 0) {
-        Serial.println("🔄 [1/2] Menulis status 'parked' ke Firebase...");
-        Firebase.setString(fbdo, path + "/status", "parked");
-        time_t tNow = time(nullptr);
-        Firebase.setInt(fbdo, path + "/parked_at", tNow);
-        Serial.println("✅ [2/2] Data Firebase sukses ditulis! Membuka gerbang...");
-        openGate(g, now);
-        Serial.printf("✅ Entrance Sukses. UID: %s, Saldo: %d\n", uid.c_str(), balance);
-      } else {
-        Serial.printf("❌ Saldo tidak cukup untuk UID: %s (Saldo: %d)\n", uid.c_str(), balance);
-      }
-    } else if (status == "parked") {
-      Serial.printf("❌ Kartu UID %s sudah berada di dalam area parkir (Status: parked)!\n", uid.c_str());
-    } else {
-      Serial.printf("❌ Kartu UID %s tidak aktif atau belum diaktivasi (Status: %s)!\n", uid.c_str(), status.c_str());
-    }
-  } else {
+  // 1. Cek apakah RFID terdaftar dan ambil data User
+  String rfidRes = execGET("/rest/v1/rfid_cards?uid=eq." + uid + "&select=user_id,vehicle_type,users(balance)");
+  if (rfidRes == "[]" || rfidRes.length() == 0) {
     Serial.printf("❌ Kartu belum terdaftar! UID: %s\n", uid.c_str());
-    String tapPath = "/unregistered_taps/" + String(g.name);
-    Firebase.setString(fbdo, tapPath + "/uid", uid);
-    time_t tNow = time(nullptr);
-    Firebase.setInt(fbdo, tapPath + "/timestamp", tNow);
-    Serial.printf("📡 Mengirim data tap terakhir ke Firebase: %s = %s\n", tapPath.c_str(), uid.c_str());
+    return;
+  }
+
+  JsonDocument docRfid;
+  deserializeJson(docRfid, rfidRes);
+  int balance = docRfid[0]["users"]["balance"];
+  String vType = docRfid[0]["vehicle_type"].as<String>();
+
+  // Cek saldo minimal (misal Rp 5000)
+  if (balance < 5000) {
+    Serial.printf("❌ Saldo tidak cukup untuk masuk! UID: %s (Saldo: Rp %d)\n", uid.c_str(), balance);
+    return;
+  }
+
+  // 2. Cek apakah kendaraan ini sedang parkir (status = PARKED)
+  String histRes = execGET("/rest/v1/parking_history?rfid_uid=eq." + uid + "&status=eq.PARKED");
+  if (histRes != "[]" && histRes.length() > 0) {
+    Serial.printf("❌ Kartu UID %s sudah berada di dalam area parkir!\n", uid.c_str());
+    return;
+  }
+
+  // 3. Catat Entrance ke parking_history
+  Serial.println("🔄 Mencatat histori masuk ke Supabase...");
+  String timeIn = getISO8601Time();
+  String payload = "{\"rfid_uid\":\"" + uid + "\",\"status\":\"PARKED\",\"time_in\":\"" + timeIn + "\"}";
+  String postRes = execPOST("/rest/v1/parking_history", payload);
+  
+  if (postRes.length() > 0) {
+    Serial.printf("✅ Entrance Sukses. UID: %s, Saldo: Rp %d\n", uid.c_str(), balance);
+    openGate(g, now);
+  } else {
+    Serial.println("⚠️ Gagal mencatat histori entrance.");
   }
 }
 
 void processExit(Gate &g, String uid, unsigned long now) {
-  String path = "/users/" + uid;
+  // 1. Ambil session parkir aktif & data saldo user
+  String histRes = execGET("/rest/v1/parking_history?rfid_uid=eq." + uid + "&status=eq.PARKED&select=id,time_in,rfid_cards(user_id,vehicle_type,users(balance))");
+  if (histRes == "[]" || histRes.length() == 0) {
+    Serial.printf("❌ Kendaraan tidak terdaftar sedang parkir atau kartu salah: %s\n", uid.c_str());
+    return;
+  }
+
+  JsonDocument docHist;
+  deserializeJson(docHist, histRes);
+  String histId = docHist[0]["id"].as<String>();
+  String timeInStr = docHist[0]["time_in"].as<String>();
+  String userId = docHist[0]["rfid_cards"]["user_id"].as<String>();
+  String vType = docHist[0]["rfid_cards"]["vehicle_type"].as<String>();
+  int balance = docHist[0]["rfid_cards"]["users"]["balance"];
+
+  // 2. Kalkulasi Durasi & Tarif
+  time_t tIn = parseISO8601(timeInStr);
+  time_t tOut = time(nullptr);
+  double duration_secs = difftime(tOut, tIn);
+  if (duration_secs < 0) duration_secs = 0;
   
-  if (Firebase.getString(fbdo, path + "/status")) {
-    String status = fbdo.stringData();
-    if (status != "parked") {
-      Serial.printf("❌ Kendaraan tidak terdaftar sedang parkir: %s\n", uid.c_str());
-      return;
-    }
-    
-    int parked_at = 0;
-    if (Firebase.getInt(fbdo, path + "/parked_at")) {
-      parked_at = fbdo.intData();
-    }
-    
-    int balance = 0;
-    if (Firebase.getInt(fbdo, path + "/balance")) {
-      balance = fbdo.intData();
-    }
-    
-    time_t tNow = time(nullptr);
-    double hours = difftime(tNow, parked_at) / 3600.0;
-    if (hours < 1.0) hours = 1.0; // Anggap minimal parkir 1 jam
-    
-    int cost = (int)hours * TARIF_PER_JAM;
-    if (balance >= cost) {
-      balance -= cost;
-      Serial.println("🔄 [1/2] Memotong saldo & update status di Firebase...");
-      Firebase.setInt(fbdo, path + "/balance", balance);
-      Firebase.setString(fbdo, path + "/status", "left");
-      Serial.println("✅ [2/2] Pembayaran sukses! Membuka gerbang...");
-      openGate(g, now);
-      Serial.printf("✅ Exit Sukses. UID: %s, Biaya: %d, Sisa Saldo: %d\n", uid.c_str(), cost, balance);
-    } else {
-      Serial.printf("❌ Saldo tidak cukup untuk Exit! UID: %s, Biaya: %d, Saldo: %d\n", uid.c_str(), cost, balance);
-    }
+  int duration_minutes = ceil(duration_secs / 60.0);
+  if (duration_minutes < 1) duration_minutes = 1;
+
+  int cost = 0;
+  if (vType == "Motor") {
+    cost = 2000; // Base 1 jam
+    if (duration_minutes > 60) cost += (duration_minutes - 60) * 30;
   } else {
-    Serial.printf("❌ Data pengguna tidak ditemukan! UID: %s\n", uid.c_str());
-    String tapPath = "/unregistered_taps/" + String(g.name);
-    Firebase.setString(fbdo, tapPath + "/uid", uid);
-    time_t tNow = time(nullptr);
-    Firebase.setInt(fbdo, tapPath + "/timestamp", tNow);
-    Serial.printf("📡 Mengirim data tap terakhir ke Firebase: %s = %s\n", tapPath.c_str(), uid.c_str());
+    cost = 5000; // Base 1 jam
+    if (duration_minutes > 60) cost += (duration_minutes - 60) * 80;
+  }
+
+  if (balance >= cost) {
+    int newBalance = balance - cost;
+    Serial.println("🔄 Memproses pembayaran & histori keluar di Supabase...");
+    
+    // Update Saldo User
+    String userPayload = "{\"balance\":" + String(newBalance) + "}";
+    execPATCH("/rest/v1/users?id=eq." + userId, userPayload);
+
+    // Update History Parkir
+    String timeOutStr = getISO8601Time();
+    String histPayload = "{\"time_out\":\"" + timeOutStr + "\",\"duration_minutes\":" + String(duration_minutes) + ",\"total_fee\":" + String(cost) + ",\"status\":\"COMPLETED\"}";
+    execPATCH("/rest/v1/parking_history?id=eq." + histId, histPayload);
+
+    Serial.printf("✅ Exit Sukses. UID: %s, Durasi: %d mnt, Biaya: Rp %d, Sisa Saldo: Rp %d\n", uid.c_str(), duration_minutes, cost, newBalance);
+    openGate(g, now);
+  } else {
+    Serial.printf("❌ Saldo tidak cukup untuk Exit! UID: %s, Biaya: Rp %d, Saldo: Rp %d\n", uid.c_str(), cost, balance);
   }
 }
 
 void setup() {
   Serial.begin(115200);
+  httpMutex = xSemaphoreCreateMutex();
   
-  wm.setConfigPortalBlocking(false);
+  wm.setConfigPortalBlocking(true);
   wm.autoConnect("AutoPics_Gate_AP");
 
-  // Gunakan server NTP lokal Indonesia (id.pool.ntp.org) agar sinkronisasi lebih cepat
+  // Sinkronisasi Waktu
   configTime(0, 0, "id.pool.ntp.org", "pool.ntp.org", "time.nist.gov");
   Serial.print("NTP Sync...");
   time_t now = time(nullptr);
-  // Loop memblokir tanpa batas waktu sampai NTP sukses sinkron
   while (now < 8 * 3600 * 2) { 
     delay(500); 
     Serial.print("."); 
     now = time(nullptr); 
   }
   Serial.println(" OK");
-
-  config.api_key = API_KEY;
-  config.database_url = DATABASE_URL;
   
-  // Otentikasi menggunakan Email & Password
-  auth.user.email = USER_EMAIL;
-  auth.user.password = USER_PASSWORD;
-
-  Serial.print("Menghubungkan ke Firebase Auth...");
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
-  Serial.println(" OK");
-  
-  // Batasi alokasi buffer respon Firebase untuk menghemat memori RAM (mencegah fragmentasi & SSL timeout)
-  fbdo.setResponseSize(1024);
-  streamFbdo.setResponseSize(1024);
-  
-  delay(1000); 
-  
-  if (!Firebase.beginStream(streamFbdo, "/parkir/ringkasan")) {
-    Serial.printf("Stream Error: %s\n", streamFbdo.errorReason().c_str());
-  }
-  Firebase.setStreamCallback(streamFbdo, streamCb, [](bool t){});
-
-  // CRITICAL FOR MULTI-SPI: Set semua pin SS (SDA) sebagai OUTPUT dan set HIGH (Inaktif) 
-  // sebelum memanggil PCD_Init() agar tidak terjadi tabrakan/kolisi bus SPI!
   pinMode(SS_MOT, OUTPUT);
   pinMode(SS_MOB, OUTPUT);
   pinMode(SS_EXIT, OUTPUT);
@@ -277,7 +342,21 @@ void setup() {
     gts[i].sv.write(0);
   }
   
-  Serial.println(">>> GATE SYSTEM READY <<<");
+  // Initial Polling
+  pollParkingSlots();
+  
+  // Buat Task FreeRTOS agar HTTP GET ke Supabase berjalan di background (Core 0)
+  xTaskCreatePinnedToCore(
+    [](void* param) {
+      for(;;) {
+        vTaskDelay(5000 / portTICK_PERIOD_MS); // Tunggu 5 detik
+        pollParkingSlots();
+      }
+    },
+    "PollTask", 8192, NULL, 1, NULL, 0
+  );
+
+  Serial.println(">>> SUPABASE GATE SYSTEM READY <<<");
 }
 
 void loop() {
@@ -285,14 +364,13 @@ void loop() {
   unsigned long now = millis();
   static unsigned long lastDbPrint = 0;
 
-  // Cetak status jarak ultrasonik ke Serial Monitor setiap 1 detik untuk mempermudah kalibrasi/debugging fisik
   if (now - lastDbPrint >= 1000) {
     lastDbPrint = now;
     long dMot = getD(gts[0].trig, gts[0].echo);
     long dMob = getD(gts[1].trig, gts[1].echo);
     long dExt = getD(gts[2].trig, gts[2].echo);
-    Serial.printf("🔍 [DEBUG] Heap: %d B | Jarak - MOTOR_IN: %ld cm | MOBIL_IN: %ld cm | EXIT_ALL: %ld cm (Threshold: %d cm)\n", 
-                  ESP.getFreeHeap(), dMot, dMob, dExt, DISTANCE_THRESHOLD);
+    Serial.printf("🔍 Heap: %d B | Slot Kosong: %d | Jarak(MTR,MBL,EXT): %ld,%ld,%ld cm\n", 
+                  ESP.getFreeHeap(), availSlots, dMot, dMob, dExt);
   }
 
   if (now - lastScan >= SCAN_INTERVAL) {
@@ -306,7 +384,7 @@ void loop() {
       detectedUid = getUID(g.rfid);
       g.rfid->PICC_HaltA();
       rfidPresent = true;
-      Serial.printf("📡 [RFID DEBUG] Kartu Terdeteksi di %s! UID: %s\n", g.name, detectedUid.c_str());
+      Serial.printf("📡 Kartu di %s! UID: %s\n", g.name, detectedUid.c_str());
     }
 
     if (!g.isOpen) {
@@ -318,22 +396,19 @@ void loop() {
         }
       }
     } else {
-      // LOGIKA PENUTUPAN GERBANG PINTAR
       if (abs(dist - g.defaultDist) > 1 && dist != 999) {
-        g.hasEntered = true; // Kendaraan terdeteksi melintas
-        g.stableEmptyTime = 0; // Reset timer kosong
+        g.hasEntered = true;
+        g.stableEmptyTime = 0;
       } else {
         if (g.stableEmptyTime == 0) g.stableEmptyTime = now;
         
-        // 1. Tutup jika kendaraan sudah lewat dan sensor stabil kosong selama 1.5 detik
         if (g.hasEntered && (now - g.stableEmptyTime >= 1500)) {
-          Serial.printf("🔒 %s: CLOSE (Kendaraan telah melintas)\n", g.name);
+          Serial.printf("🔒 %s: CLOSE (Lewat)\n", g.name);
           g.sv.write(0);
           g.isOpen = false;
         }
-        // 2. Tutup jika timeout (misal ngetap kartu tapi tidak jadi masuk)
         else if (!g.hasEntered && (now - g.lastOpen >= GATE_HOLD_TIME)) {
-          Serial.printf("🔒 %s: CLOSE (Timeout, kendaraan tidak masuk)\n", g.name);
+          Serial.printf("🔒 %s: CLOSE (Timeout)\n", g.name);
           g.sv.write(0);
           g.isOpen = false;
         }
@@ -343,17 +418,28 @@ void loop() {
     currentIdx = (currentIdx + 1) % 3;
   }
 
-  // Auto-close sudah di-handle oleh logika gerbang pintar di dalam polling loop di atas
-
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-
     if (cmd == "reswi") {
-      Serial.println("♻️ Mereset WiFi & Restarting...");
       wm.resetSettings();
       delay(1000);
       ESP.restart();
     }
+  }
+
+  // --- FITUR RESET WIFI VIA TOMBOL BOOT FISIK ---
+  // Tombol BOOT bawaan ESP32 terhubung ke GPIO 0
+  static unsigned long btnPressTime = 0;
+  if (digitalRead(0) == LOW) {
+    if (btnPressTime == 0) btnPressTime = millis();
+    else if (millis() - btnPressTime > 3000) {
+      Serial.println("\n[!] Tombol BOOT ditekan 3 detik. Mereset WiFi...");
+      wm.resetSettings();
+      delay(1000);
+      ESP.restart();
+    }
+  } else {
+    btnPressTime = 0;
   }
 }

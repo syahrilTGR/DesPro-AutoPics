@@ -2,7 +2,7 @@
 
 **Sistem Inteligensi Parkir Terintegrasi IoT, Computer Vision, dan Ekosistem Cloud.**
 
-AutoPics adalah solusi manajemen parkir pintar yang menggabungkan efisiensi hardware **ESP32**, kekuatan deteksi visual **Python (OpenCV)**, dan sinkronisasi real-time **Firebase**. Sistem ini mengotomatisasi pemantauan slot parkir tanpa memerlukan sensor fisik di setiap slot, melainkan menggunakan kamera sebagai mata cerdas.
+AutoPics adalah solusi manajemen parkir pintar yang menggabungkan efisiensi hardware **ESP32**, kekuatan deteksi visual **Python (OpenCV)**, dan sinkronisasi real-time **Supabase (PostgreSQL)**. Sistem ini mengotomatisasi pemantauan slot parkir tanpa memerlukan sensor fisik di setiap slot, melainkan menggunakan kamera sebagai mata cerdas.
 
 ---
 
@@ -14,7 +14,7 @@ Sistem ini telah dioptimasi untuk performa maksimal pada perangkat edge:
 -   **💾 IP Memory Fallback**: Python mengingat IP terakhir yang berhasil terkoneksi (`last_ip.txt`), memastikan koneksi instan meskipun discovery gagal.
 -   **⚡ Stable HTTP Streaming**: Menggunakan metode *Keep-Alive* yang jauh lebih stabil daripada TCP Push konvensional, mencegah "buffer bloat" dan lag.
 -   **📉 Dynamic FPS Limiter**: Dibatasi pada **5 FPS** secara presisi di sisi client untuk menjaga suhu ESP32 tetap dingin dan menghemat bandwidth tanpa mengorbankan akurasi deteksi.
--   **🔥 Firebase Real-time Sync**: Status slot parkir diupdate secara instan ke cloud dan dapat dipantau langsung via aplikasi mobile.
+-   **🔥 Supabase Cloud Sync**: Status slot parkir diupdate secara instan ke cloud via REST API dan dapat dipantau langsung via aplikasi mobile.
 
 ---
 
@@ -23,7 +23,7 @@ Sistem ini telah dioptimasi untuk performa maksimal pada perangkat edge:
 1.  **Main Controller (ESP32)**: Mengontrol gerbang fisik (Servo), sensor ultrasonik, dan pembaca RFID (RC522).
 2.  **Visual Monitoring (ESP32-CAM)**: Melakukan streaming visual area parkir secara efisien.
 3.  **Vision Engine (Python & OpenCV)**: Unit pemrosesan AI yang melakukan deteksi okupansi slot parkir menggunakan metode **Region of Interest (ROI)**.
-4.  **Cloud Backend (Firebase)**: Pusat data untuk status slot, saldo pengguna, dan riwayat parkir.
+4.  **Cloud Backend (Supabase)**: Pusat data relasional (PostgreSQL) untuk status slot, entitas pengguna, dan pencatatan riwayat parkir.
 5.  **Mobile App**: Dashboard interaktif untuk pengguna mencari tempat parkir kosong.
 
 ---
@@ -60,7 +60,7 @@ Sistem ini telah dioptimasi untuk performa maksimal pada perangkat edge:
     ```bash
     pip install -r requirements.txt
     ```
--   *(Opsional)* Anda dapat memasukkan Web API Key Firebase Anda langsung ke dalam baris kode di `python/y.py` agar sistem dapat login secara resmi.
+-   *(Opsional)* Anda dapat memasukkan API Key Supabase Anda langsung ke dalam baris kode di `python/y.py` agar sistem dapat login secara resmi.
 -   Jalankan engine:
     ```bash
     python python/y.py
@@ -81,12 +81,13 @@ Untuk memastikan kelancaran pengembangan di masa depan, berikut adalah beberapa 
 *   **Masalah**: Flashing firmware pada macOS seringkali mengalami kegagalan `termios.error: (22, 'Invalid argument')` karena *driver* serial USB tidak mendukung penggantian kecepatan baud secara dinamis oleh `esptool.py`.
 *   **Solusi**: Kecepatan unggah dikunci secara stabil pada **`upload_speed = 115200`** di dalam `platformio.ini` untuk lingkungan `esp32dev` dan `esp32cam`.
 
-### 2. Jaringan & Koneksi NTP (Penting untuk SSL)
-*   **Masalah**: ESP32 menggunakan koneksi aman HTTPS (SSL) untuk berkomunikasi dengan Firebase. Agar jabat tangan SSL (*SSL Handshake*) berhasil, waktu internal ESP32 harus sinkron dengan waktu nyata internet. Jika sinkronisasi NTP gagal, koneksi SSL akan ditolak oleh Firebase (Error: `Failed to initialize the SSL layer`).
-*   **Solusi**: ESP32 diprogram menggunakan server lokal **`id.pool.ntp.org`** dan memblokir booting secara aman sampai waktu terverifikasi sinkron. Jika Anda mengalami hambatan atau titik-titik `NTP Sync...` yang lama, pastikan untuk **menghubungkan ESP32 ke Hotspot/Tethering HP Anda** (karena provider seluler tidak memblokir port UDP 123 untuk NTP).
+### 2. Jaringan & Koneksi HTTPS (Bypass SSL)
+*   **Masalah**: ESP32 menggunakan koneksi aman HTTPS (SSL) untuk berkomunikasi dengan Supabase. Koneksi bawaan `HTTPClient` sering memakan RAM hingga 40KB+ dan rentan gagal melakukan jabat tangan (SSL Handshake).
+*   **Solusi**: Dirombak menggunakan `WiFiClientSecure` manual dengan instruksi `client.setInsecure()`. Ini memangkas *overhead* validasi sertifikat Let's Encrypt secara total, membuat lalu lintas data menjadi super ringan dan kebal dari penyakit *hang*.
 
-### 3. Pemisahan Jalur Data Firebase (Stream vs Query)
-*   **Solusi**: Koneksi *Streaming* di latar belakang menggunakan objek data terdedikasi **`streamFbdo`**, sedangkan operasi *Get/Set* (baca saldo & tulis status) menggunakan objek **`fbdo`**. Pemisahan ini mencegah terputusnya pemantauan slot parkir asinkron secara tiba-tiba ketika kartu RFID ditap.
+### 3. Pencegahan Tabrakan Internet ESP32 (Deadlock)
+*   **Masalah**: ESP32 memiliki dua inti prosesor (Dual-Core). Meminta data ke Supabase di *background* sambil melakukan Tap Kartu secara bersamaan akan membuat *network stack* LwIP bertabrakan.
+*   **Solusi**: Kita memisahkan tugas *Polling* slot kosong ke **Core 0**, sedangkan *loop* pembacaan sensor ultrasonik dan RFID di **Core 1**. Sebagai pengaman jalurnya, digunakan sistem penguncian **FreeRTOS Mutex** (`httpMutex`). Kini Core 0 dan Core 1 bergantian secara rapi saat mengirim *request* HTTP.
 
 ### 4. Optimasi Memori RAM (Heap) & Jarak Threshold
 *   **Arus & Memori**: Memori buffer respons Firebase dibatasi sebesar **1KB** (`setResponseSize(1024)`) untuk mencegah fragmentasi RAM di ESP32. Urutan penulisan Firebase diselesaikan *sebelum* servo berputar untuk menjaga chip WiFi dari kejutan penurunan tegangan (*voltage dip*).

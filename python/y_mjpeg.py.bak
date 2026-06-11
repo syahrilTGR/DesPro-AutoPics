@@ -13,7 +13,7 @@ Cara pakai:
 
 Install:
   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-  pip install opencv-python numpy requests
+  pip install opencv-python numpy firebase-admin
 """
 
 import cv2
@@ -44,6 +44,13 @@ def discover_esp_ip(fallback_ip="10.128.17.172",
                     mdns_hostname="autopics-cam.local",
                     udp_port=4210,
                     udp_timeout=3.5):
+    """
+    Cari IP ESP32-CAM secara otomatis:
+      1. UDP Beacon  — ESP32 broadcast paket ke jaringan
+      2. mDNS        — resolusi nama .local
+      3. Fallback    — pakai IP manual jika keduanya gagal
+    """
+    # ── Tahap 1: UDP Beacon ───────────────────
     print("🔍 [1/3] Mencari ESP32-CAM via UDP Beacon...")
     try:
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -61,6 +68,7 @@ def discover_esp_ip(fallback_ip="10.128.17.172",
     except Exception as e:
         print(f"   UDP timeout: {e}")
 
+    # ── Tahap 2: mDNS (.local) ────────────────
     print(f"🔍 [2/3] Mencoba mDNS ({mdns_hostname})...")
     try:
         ip = socket.gethostbyname(mdns_hostname)
@@ -70,21 +78,25 @@ def discover_esp_ip(fallback_ip="10.128.17.172",
     except Exception:
         print(f"   mDNS gagal")
 
+    # ── Tahap 3: Fallback IP Terakhir ─────────
     ip = get_fallback_ip()
     print(f"⚠️  [3/3] Pakai IP terakhir → {ip}")
     return ip
 
 # ── ESP32-CAM ─────────────────────────────────
 ESP32_IP    = discover_esp_ip()
-STREAM_URL  = f"http://{ESP32_IP}/cam-mid.jpg"
-SNAP_URL    = f"http://{ESP32_IP}/cam-mid.jpg"
+STREAM_URL  = f"http://{ESP32_IP}/stream"
+SNAP_URL    = f"http://{ESP32_IP}/cam-lo.jpg"
 
 # ── Konfigurasi Visual ────────────────────────
-FLIP_HORIZONTAL = True
+FLIP_HORIZONTAL = True  # Set True jika gambar terbalik kiri-kanan
 
-# ── Supabase ───────────────────────────────────
-SUPABASE_URL = "https://hjxiczdakbcrnuntyrjk.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhqeGljemRha2Jjcm51bnR5cmprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5NzUxNzMsImV4cCI6MjA5NjU1MTE3M30.Q5z5Eqeod6kd-sHhp-HOFW-vO8GMoJySo8Xopg_Vz_0"
+# ── Firebase ───────────────────────────────────
+FIREBASE_CRED_PATH   = "key.json"  # ← file JSON dari Firebase Console
+FIREBASE_DB_URL      = "https://parking-600df-default-rtdb.asia-southeast1.firebasedatabase.app/"
+FIREBASE_PATH_SLOTS  = "parkir/slots"
+FIREBASE_PATH_SUMMARY= "parkir/ringkasan"
+FIREBASE_INTERVAL    = 2.0
 
 # ══════════════════════════════════════════════
 #  GPU SETUP
@@ -139,32 +151,38 @@ mode          = "normal"
 terkalibrasi  = False
 show_debug    = False
 
+# State tambahan untuk pemilihan tipe kendaraan
 sedang_pilih_tipe = False
 last_rect         = None
-flash_level       = 0
 
 # ╔══════════════════════════════════════════════╗
-# ║              SUPABASE SETUP                  ║
+# ║              FIREBASE SETUP                  ║
 # ╚══════════════════════════════════════════════╝
-def init_supabase():
+firebase_ok = False
+db_ref      = None
+
+def init_firebase():
+    global firebase_ok
     try:
         import requests
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        resp = requests.get(f"{SUPABASE_URL}/rest/v1/parking_slots?limit=1", headers=headers, timeout=4)
+        # Lakukan tes koneksi singkat ke Firebase RTDB
+        test_url = f"{FIREBASE_DB_URL.rstrip('/')}/.json"
+        resp = requests.get(test_url, params={"shallow": "true"}, timeout=4)
         if resp.status_code == 200:
-            print(f"🔥 Supabase terhubung (REST API Mode)")
+            firebase_ok = True
+            print(f"🔥 Firebase terhubung (REST API Mode) → {FIREBASE_DB_URL}")
             return True
         else:
-            print(f"⚠️  Gagal terhubung ke Supabase: HTTP {resp.status_code}")
+            print(f"⚠️  Gagal terhubung ke Firebase RTDB: HTTP {resp.status_code}")
             return False
     except Exception as e:
-        print(f"⚠️  Supabase REST connection failed: {e}")
+        print(f"⚠️  Firebase REST connection failed: {e}")
         return False
 
 # ╔══════════════════════════════════════════════╗
-# ║         SUPABASE SENDER (BACKGROUND)         ║
+# ║         FIREBASE SENDER (BACKGROUND)         ║
 # ╚══════════════════════════════════════════════╝
-class SupabaseSender:
+class FirebaseSender:
     def __init__(self):
         self._queue      = {}
         self._lock       = threading.Lock()
@@ -175,6 +193,7 @@ class SupabaseSender:
         threading.Thread(target=self._loop, daemon=True).start()
 
     def update(self, hasil: dict, total_slot: int):
+        if not firebase_ok: return
         has_change = False
         with self._lock:
             for sid, (terisi, skor) in hasil.items():
@@ -182,13 +201,14 @@ class SupabaseSender:
                 last_terisi = last_state[0] if last_state else None
                 
                 if last_terisi != terisi:
+                    # Cari data tipe kendaraan dari daftar slot global
                     slot = next((s for s in slots if s["id"] == sid), None)
                     if not slot: continue
                     
                     self._queue[sid] = {
-                        "slot_id": sid,
-                        "status": "FULL" if terisi else "EMPTY",
-                        "last_updated": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                        "terisi"    : terisi,
+                        "tipe"      : slot.get("tipe", "mobil"), # default mobil
+                        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
                     has_change = True
         
@@ -197,46 +217,74 @@ class SupabaseSender:
 
     def _loop(self):
         while self.running:
+            # Tunggu sampai ada update baru atau timeout 2 detik untuk safety sync
             self._event.wait(timeout=2.0)
             self._event.clear()
             
             with self._lock:
                 if not self._queue: continue
-                batch = list(self._queue.values())
+                batch = dict(self._queue)
                 self._queue.clear()
             
             self._kirim(batch)
 
-    def _kirim(self, batch: list):
+    def _kirim(self, batch: dict):
         try:
             import requests
-            headers = {
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "resolution=merge-duplicates"
+            for sid, data in batch.items():
+                tipe = data.pop("tipe")
+                # Kirim ke folder sub-jenis: parkir/slots/mobil/A1.json
+                url = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SLOTS}/{tipe}/{sid}.json"
+                resp = requests.put(url, json=data, timeout=5)
+                if resp.status_code == 200:
+                    self._last_sent[sid] = (data["terisi"], tipe)
+                    self.kirim_count += 1
+                else:
+                    print(f"⚠️  Gagal update slot {sid}: HTTP {resp.status_code}")
+            
+            # Hitung ringkasan terpisah (mobil vs motor)
+            summary_data = {
+                "mobil": {"total": 0, "terisi": 0, "kosong": 0, "persen": 0},
+                "motor": {"total": 0, "terisi": 0, "kosong": 0, "persen": 0}
             }
-            
-            url = f"{SUPABASE_URL}/rest/v1/parking_slots"
-            resp = requests.post(url, json=batch, headers=headers, timeout=5)
-            
-            if resp.status_code in [200, 201]:
-                for item in batch:
-                    self._last_sent[item["slot_id"]] = (item["status"] == "FULL", "tipe")
-                self.kirim_count += len(batch)
-                print(f"🔥 Supabase update ({len(batch)} slot updated)")
-            else:
-                print(f"⚠️  Gagal update slot: HTTP {resp.status_code} - {resp.text}")
+
+            for s in slots:
+                sid, tipe = s["id"], s.get("tipe", "mobil")
+                if sid in self._last_sent:
+                    terisi, _ = self._last_sent[sid]
+                    summary_data[tipe]["total"] += 1
+                    if terisi: summary_data[tipe]["terisi"] += 1
+                    else: summary_data[tipe]["kosong"] += 1
+
+            for tipe in ["mobil", "motor"]:
+                d = summary_data[tipe]
+                if d["total"] > 0:
+                    d["persen"] = round(d["terisi"] / d["total"] * 100, 1)
+                    url_sum = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SUMMARY}/{tipe}.json"
+                    sum_payload = {
+                        "total"      : d["total"],
+                        "terisi"     : d["terisi"],
+                        "kosong"     : d["kosong"],
+                        "persen_terisi": d["persen"],
+                        "updated_at" : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    requests.put(url_sum, json=sum_payload, timeout=5)
+
+            print(f"🔥 Firebase update ({len(batch)} slot updated)")
 
         except Exception as e:
-            print(f"⚠️  Supabase REST error: {e}")
+            print(f"⚠️  Firebase REST error: {e}")
 
     def reset_slot(self, slot_id: str):
+        if not firebase_ok: return
         try:
             import requests
-            headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-            url = f"{SUPABASE_URL}/rest/v1/parking_slots?slot_id=eq.{slot_id}"
-            requests.delete(url, headers=headers, timeout=5)
+            # Cari tipe dulu sebelum hapus
+            slot = next((s for s in slots if s["id"] == slot_id), None)
+            if slot:
+                tipe = slot.get("tipe", "mobil")
+                url = f"{FIREBASE_DB_URL.rstrip('/')}/{FIREBASE_PATH_SLOTS}/{tipe}/{slot_id}.json"
+                requests.delete(url, timeout=5)
             self._last_sent.pop(slot_id, None)
         except Exception as e:
             print(f"⚠️  Gagal menghapus slot {slot_id}: {e}")
@@ -254,8 +302,6 @@ class StreamReader:
         self._lock     = threading.Lock()
         self.running   = False
         self.connected = False
-        import requests
-        self.session   = requests.Session()
         self.fps       = 0.0
         self._fps_hist = deque(maxlen=10)
 
@@ -265,38 +311,54 @@ class StreamReader:
         return self
 
     def _loop(self):
+        import requests
         while self.running:
-            t_start = time.time()
             try:
-                resp = self.session.get(self.url, timeout=5)
-                if resp.status_code == 200:
-                    img_np = np.frombuffer(resp.content, dtype=np.uint8)
-                    frame  = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
+                # Buka koneksi stream dengan requests untuk menghindari bug OpenCV backend
+                current_url = self.url
+                res = requests.get(current_url, stream=True, timeout=5)
+                
+                if res.status_code == 200:
+                    if not self.connected:
+                        print(f"🔗 Terhubung (MJPEG Stream): {current_url}")
+                    self.connected = True
                     
-                    if frame is not None:
-                        self._fps_hist.append(1.0 / max(time.time() - t_start, 0.001))
-                        self.fps = float(np.mean(self._fps_hist))
-
-                        if not self.connected: 
-                            print(f"🔗 Terhubung (Keep-Alive): {self.url}")
-                        self.connected = True
-                        
-                        if FLIP_HORIZONTAL:
-                            frame = cv2.flip(frame, 1)
+                    bytes_data = b''
+                    for chunk in res.iter_content(chunk_size=4096):
+                        if not self.running or self.url != current_url:
+                            break # URL berubah atau program berhenti
                             
-                        with self._lock: self._frame = frame
+                        bytes_data += chunk
+                        a = bytes_data.find(b'\xff\xd8') # SOI (Start of Image)
+                        b = bytes_data.find(b'\xff\xd9') # EOI (End of Image)
+                        
+                        if a != -1 and b != -1:
+                            jpg = bytes_data[a:b+2]
+                            bytes_data = bytes_data[b+2:] # Simpan sisa chunk untuk frame berikutnya
+                            
+                            t_start = time.time()
+                            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            
+                            if frame is not None:
+                                # Hitung estimasi FPS parsing
+                                self._fps_hist.append(1.0 / max(time.time() - t_start, 0.001))
+                                self.fps = float(np.mean(self._fps_hist))
+                                
+                                if FLIP_HORIZONTAL:
+                                    frame = cv2.flip(frame, 1)
+                                    
+                                with self._lock: 
+                                    self._frame = frame
                 else:
+                    print(f"❌ Koneksi ditolak (HTTP {res.status_code})")
                     self.connected = False
+                    time.sleep(1)
+                    
             except Exception as e:
                 if self.connected:
-                    print(f"❌ Koneksi terputus: {e}")
+                    print(f"❌ Error koneksi stream: {e}")
                 self.connected = False
-                time.sleep(0.5)
-
-            t_elapsed = time.time() - t_start
-            t_sleep   = max(0, 0.2 - t_elapsed)
-            if t_sleep > 0:
-                time.sleep(t_sleep)
+                time.sleep(1)
 
     def update_url(self, new_url):
         with self._lock:
@@ -436,6 +498,7 @@ def deteksi_semua_slot(gray_tensor):
     if not ids: return {}
     cs, rs = torch.stack(batch_curr), torch.stack(batch_ref)
     skor_mse = torch.clamp(((cs - rs) ** 2).mean(dim=[1, 2]) / 2500.0, 0, 1)
+    # Hist & Edge simplified loops
     skor_hist = torch.tensor([1.0 - torch.sqrt(hist_gpu(c) * ref_tensors[ids[i]]["hist"] + 1e-8).sum().clamp(0,1) for i,c in enumerate(batch_curr)], device=DEVICE)
     skor_edge = torch.tensor([min(1.0, max(0.0, (edge_density_gpu(c) - ref_tensors[ids[i]]["edge_density"]) / max(ref_tensors[ids[i]]["edge_density"] + 0.01, 0.05) * 0.7)) for i,c in enumerate(batch_curr)], device=DEVICE)
     skor_final = (WEIGHT_MSE*skor_mse + WEIGHT_HIST*skor_hist + WEIGHT_EDGE*skor_edge).cpu().numpy()
@@ -465,9 +528,11 @@ def gambar_overlay(frame, hasil):
         cv2.rectangle(frame, (x1, y1), (x2, y2), warna, 3)
 
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        # ID & Status
         cv2.putText(frame, sid, (cx - 14, cy - 8), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255,255,255), 2)
         cv2.putText(frame, label, (cx - 22, cy + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255,255,255), 1)
         
+        # Label Tipe Kendaraan
         label_t = "MOBIL" if tipe == "mobil" else "MOTOR"
         cv2.putText(frame, label_t, (x1 + 6, y1 + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255,255,0), 1)
 
@@ -485,8 +550,6 @@ def gambar_hud(frame, hasil, fps, fps_gpu):
     cv2.rectangle(frame, (0, h - 38), (w, h), (15, 15, 30), -1)
     info = f"Slot:{total}  Kosong:{kosong}  Terisi:{terisi}  FPS:{fps:.1f}  Threshold:{THRESHOLD_SCORE:.2f}"
     cv2.putText(frame, info, (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
-    
-    cv2.putText(frame, f"[F] Senter Lvl:{flash_level}", (w - 140, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
     return frame
 
 def gambar_sementara(frame):
@@ -500,7 +563,7 @@ def gambar_sementara(frame):
 def mouse_cb(event, x, y, flags, param):
     global menggambar, titik_awal, kotak_tmp, slots
     global sedang_pilih_tipe, last_rect
-    sb_sender = param
+    fb_sender = param
     if mode == "gambar":
         if event == cv2.EVENT_LBUTTONDOWN: menggambar, titik_awal = True, (x, y)
         elif event == cv2.EVENT_MOUSEMOVE and menggambar: kotak_tmp = (*titik_awal, x, y)
@@ -514,21 +577,18 @@ def mouse_cb(event, x, y, flags, param):
     elif mode == "hapus" and event == cv2.EVENT_LBUTTONDOWN:
         for i, s in enumerate(slots):
             if s["x1"] <= x <= s["x2"] and s["y1"] <= y <= s["y2"]:
-                if sb_sender: sb_sender.reset_slot(s["id"])
+                if fb_sender: fb_sender.reset_slot(s["id"])
                 ref_tensors.pop(s["id"], None); score_history.pop(s["id"], None); slots.pop(i); break
 
 def main():
     global mode, menggambar, kotak_tmp, show_debug, THRESHOLD_SCORE, terkalibrasi
-    global sedang_pilih_tipe, last_rect, flash_level
-    init_supabase()
+    global sedang_pilih_tipe, last_rect
+    init_firebase()
     load_slots(); load_referensi()
-    sb_sender = SupabaseSender()
+    fb_sender = FirebaseSender()
     reader = StreamReader(STREAM_URL).start()
-    WIN = "AUTOPICS - ESP32-CAM"
-    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WIN, 900, 600)
-    cv2.setMouseCallback(WIN, mouse_cb, sb_sender)
-
+    WIN = "AUTOPICS – ESP32-CAM"
+    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL); cv2.resizeWindow(WIN, 900, 600); cv2.setMouseCallback(WIN, mouse_cb, fb_sender)
     t_prev = time.time(); fps_hist = deque(maxlen=20); hasil = {}; frame = None
     
     print("⏳ Menunggu frame dari kamera...")
@@ -541,7 +601,7 @@ def main():
     
     if frame is None:
         print("❌ Gagal terhubung ke kamera.")
-        reader.stop(); sb_sender.stop(); return
+        reader.stop(); fb_sender.stop(); return
 
     while True:
         ret, new_f = reader.read()
@@ -551,12 +611,14 @@ def main():
             fps_hist.append(1.0/dt); fps = float(np.mean(fps_hist))
             gray_t = preprocess_frame_gpu(frame)
             hasil = deteksi_semua_slot(gray_t)
-            if hasil: sb_sender.update(hasil, len(slots))
+            if hasil: fb_sender.update(hasil, len(slots))
         
+        # Render
         display = frame.copy()
         display = gambar_overlay(display, hasil)
         gambar_sementara(display)
 
+        # UI Pemilihan Tipe Kendaraan
         if sedang_pilih_tipe:
             h_win, w_win = display.shape[:2]
             cv2.rectangle(display, (0, h_win//2 - 40), (w_win, h_win//2 + 40), (20, 20, 20), -1)
@@ -569,6 +631,7 @@ def main():
 
         key = cv2.waitKey(1) & 0xFF
 
+        # Logika Pemilihan Tipe
         if sedang_pilih_tipe:
             if key == ord('1') or key == ord('2'):
                 tipe_k = "mobil" if key == ord('1') else "motor"
@@ -578,7 +641,7 @@ def main():
                 score_history[nama] = deque(maxlen=SMOOTH_FRAMES)
                 print(f"➕ Slot {nama} ({tipe_k}) ditambahkan")
                 sedang_pilih_tipe = False; last_rect = None
-            elif key == 27:
+            elif key == 27: # Esc
                 sedang_pilih_tipe = False; last_rect = None
             continue
 
@@ -591,28 +654,14 @@ def main():
             if r: kalibrasi(f)
         elif key == ord('s'): simpan_slots(); simpan_referensi()
         
+        # Hotkeys Ganti Resolusi (3, 4, 5)
         elif key == ord('3'): reader.update_url(f"http://{ESP32_IP}/cam-lo.jpg")
         elif key == ord('4'): reader.update_url(f"http://{ESP32_IP}/cam-mid.jpg")
         elif key == ord('5'): reader.update_url(f"http://{ESP32_IP}/cam-hi.jpg")
 
-        elif key == ord('f'):
-            flash_level = (flash_level + 1) % 4
-            pwm_map = {0: 0, 1: 10, 2: 50, 3: 255}
-            val = pwm_map.get(flash_level, 0)
-            
-            def send_flash():
-                try:
-                    import requests
-                    requests.get(f"http://{ESP32_IP}/flash?val={val}", timeout=2)
-                    print(f"🔦 Senter Level: {flash_level} (PWM: {val})")
-                except Exception as e:
-                    print(f"⚠️  Gagal mengatur senter: {e}")
-            
-            import threading
-            threading.Thread(target=send_flash, daemon=True).start()
-
+        # Batasi loop agar tidak memakan CPU (FPS Cap ~20 FPS)
         time.sleep(0.05)
 
-    reader.stop(); sb_sender.stop(); cv2.destroyAllWindows()
+    reader.stop(); fb_sender.stop(); cv2.destroyAllWindows()
 
 if __name__ == "__main__": main()

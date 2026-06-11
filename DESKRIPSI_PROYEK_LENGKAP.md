@@ -22,8 +22,8 @@ Unit pemrosesan citra ini berjalan pada server/PC. Menggunakan library OpenCV, p
 *   Algoritma mendeteksi perubahan intensitas objek dalam kotak ROI untuk menentukan status okupansi slot.
 *   Hasil analisis dikirimkan secara instan ke database untuk memperbarui status slot tanpa intervensi manusia.
 
-### 2.4 Cloud Backend (Firebase Realtime Database)
-Sebagai pusat sinkronisasi, Firebase menangani data terkait:
+### 2.4 Cloud Backend (Supabase PostgreSQL)
+Sebagai pusat sinkronisasi, Supabase menangani data terkait secara relasional:
 *   Status real-time setiap slot parkir.
 *   Informasi akun pengguna (nama, ID kartu RFID, saldo).
 *   Catatan waktu masuk (*timestamp*) untuk perhitungan biaya parkir otomatis.
@@ -37,7 +37,7 @@ Antarmuka pengguna berbasis aplikasi mobile menyediakan akses informasi kapan sa
 ## 3. Mekanisme Operasional: Metode Hybrid Tapping
 AutoPics menerapkan skema **Hybrid Tapping** (Dual Tapping) untuk memastikan integritas data dan keamanan:
 
-1.  **Tahap Masuk**: Kendaraan mendekati gerbang $\rightarrow$ Sensor mendeteksi objek $\rightarrow$ Pengguna melakukan tapping kartu RFID $\rightarrow$ Sistem mengecek saldo minimal dan ketersediaan slot di Firebase $\rightarrow$ Gerbang terbuka & waktu masuk tersimpan.
+1.  **Tahap Masuk**: Kendaraan mendekati gerbang $\rightarrow$ Sensor mendeteksi objek $\rightarrow$ Pengguna melakukan tapping kartu RFID $\rightarrow$ Sistem mengecek saldo minimal dan ketersediaan slot di Supabase $\rightarrow$ Gerbang terbuka & waktu masuk tersimpan.
 2.  **Tahap Monitoring**: Selama kendaraan berada di dalam, Vision Engine terus memantau posisi slot melalui kamera dan memperbarui peta di aplikasi.
 3.  **Tahap Keluar**: Kendaraan mendekati pintu keluar $\rightarrow$ Pengguna tapping RFID kembali $\rightarrow$ Sistem menghitung durasi parkir $\rightarrow$ Saldo dikurangi secara otomatis $\rightarrow$ Gerbang terbuka.
 
