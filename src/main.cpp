@@ -43,7 +43,8 @@ struct Gate {
   bool hasEntered;
 };
 
-int availSlots = 0; // Total slot kosong
+int availSlotsMotor = 0; // Slot kosong motor
+int availSlotsMobil = 0;  // Slot kosong mobil
 
 Gate gts[3] = {
   {"MOTOR_IN", 32, 33, 13, Servo(), false, 0, false, &rfidMot, 5,  0, false},
@@ -156,13 +157,25 @@ String execPATCH(String endpoint, String jsonPayload) {
 // --- LOGIKA PARKIR ---
 void pollParkingSlots() {
   String response = execGET("/rest/v1/parking_slots?status=eq.EMPTY&select=slot_id");
+  int countMotor = 0;
+  int countMobil = 0;
+  
   if (response.length() > 0 && response != "[]") {
     JsonDocument doc;
     deserializeJson(doc, response);
-    availSlots = doc.size();
-  } else {
-    availSlots = 0;
+    for (JsonObject slot : doc.as<JsonArray>()) {
+      String slotId = slot["slot_id"].as<String>();
+      if (slotId.startsWith("B")) {
+        countMotor++;
+      } else {
+        countMobil++;
+      }
+    }
   }
+  
+  availSlotsMotor = countMotor;
+  availSlotsMobil = countMobil;
+  Serial.printf("📊 Slot Kosong — Motor: %d | Mobil: %d\n", countMotor, countMobil);
 }
 
 long getD(int t, int e) {
@@ -202,8 +215,9 @@ void openGate(Gate &g, unsigned long now) {
   g.stableEmptyTime = 0;
 }
 
-void processEntrance(Gate &g, String uid, unsigned long now) {
-  if (availSlots <= 0) {
+void processEntrance(Gate &g, String uid, unsigned long now, bool isMotor) {
+  int avail = isMotor ? availSlotsMotor : availSlotsMobil;
+  if (avail <= 0) {
     Serial.printf("⚠️ %s: FULL! (Tunggu slot kosong)\n", g.name);
     return;
   }
@@ -369,8 +383,8 @@ void loop() {
     long dMot = getD(gts[0].trig, gts[0].echo);
     long dMob = getD(gts[1].trig, gts[1].echo);
     long dExt = getD(gts[2].trig, gts[2].echo);
-    Serial.printf("🔍 Heap: %d B | Slot Kosong: %d | Jarak(MTR,MBL,EXT): %ld,%ld,%ld cm\n", 
-                  ESP.getFreeHeap(), availSlots, dMot, dMob, dExt);
+    Serial.printf("🔍 Heap: %d B | Kosong(Mtr:%d Mob:%d) | Jarak: %ld,%ld,%ld cm\n", 
+                  ESP.getFreeHeap(), availSlotsMotor, availSlotsMobil, dMot, dMob, dExt);
   }
 
   if (now - lastScan >= SCAN_INTERVAL) {
@@ -392,7 +406,8 @@ void loop() {
         if (g.isExit) {
           processExit(g, detectedUid, now);
         } else {
-          processEntrance(g, detectedUid, now);
+          bool isMotorGate = (strcmp(g.name, "MOTOR_IN") == 0);
+          processEntrance(g, detectedUid, now, isMotorGate);
         }
       }
     } else {
