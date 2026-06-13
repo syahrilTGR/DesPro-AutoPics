@@ -73,8 +73,8 @@ Jika pengguna memiliki data terbaru di tabel `parking_history` dengan `status ==
 
 ### Fitur D: Top-Up Saldo (Simulasi Kasir)
 *   *Catatan Penting*: Pengisian saldo (Top-up) saat ini **tidak dilakukan langsung di aplikasi mobile**. 
-*   Top-up disimulasikan secara *offline* melalui terminal Admin (Kasir) yang akan melakukan UPDATE saldo ke database dan mencatatnya ke tabel `transactions`.
-*   **Tugas Aplikasi Mobile**: Anda dapat mem-fetch tabel `transactions` untuk membuat halaman **Riwayat Top-Up** terpisah bagi user. Tabel `transactions` memiliki skema: `id`, `user_id`, `amount`, `transaction_type` (selalu 'TOPUP'), dan `created_at`.
+*   Top-up diproses melalui aplikasi GUI Admin (Kasir) desktop (`python/admin_topup_gui.py`). Aplikasi ini dilengkapi antarmuka *dropdown* yang memuat UID RFID beserta Nama Pengguna langsung dari Supabase, lalu melakukan UPDATE saldo dan mencatat histori transaksi ke tabel `transactions`.
+*   **Tugas Aplikasi Mobile**: Tim Mobile dapat mem-fetch tabel `transactions` untuk membuat halaman **Riwayat Top-Up** terpisah bagi user. Tabel `transactions` memiliki skema: `id`, `user_id`, `amount`, `transaction_type` (disetel menjadi 'TOPUP'), dan `created_at`.
 ---
 
 ## 4. Tips & Best Practices untuk Mobile App Dev

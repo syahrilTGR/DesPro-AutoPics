@@ -22,7 +22,7 @@ Sistem parkir miniatur otomatis yang mengintegrasikan kontrol mekanik (Gate Cont
 *   **Fitur**:
     *   **Real-time Counter**: Membaca data jumlah slot kosong untuk mobil dan motor secara live dari Supabase.
     *   **Visual Map**: Layout denah area parkir interaktif (Warna Hijau: Kosong, Merah: Terisi) berdasarkan status tiap slot.
-    *   **Billing Center**: Pengecekan saldo, riwayat transaksi, serta pengisian saldo (Top-up).
+    *   **Billing Center**: Pengecekan saldo, riwayat transaksi (terintegrasi di tabel `transactions`), serta pengisian saldo (Top-up via aplikasi Kasir/Admin Desktop).
     *   **Registrasi Kartu Tanpa NFC HP**: Melakukan klaim kartu RFID baru melalui metode *Last Tap Claim* berbasis timestamp per gerbang fisik.
 
 ---

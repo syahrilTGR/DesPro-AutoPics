@@ -613,13 +613,14 @@ Sistem menggunakan 5 tabel di database PostgreSQL (Supabase):
 | `total_fee` | NUMERIC | Total biaya parkir dalam Rupiah |
 | `status` | VARCHAR(20) | `PARKED` (sedang parkir) atau `COMPLETED` (sudah keluar) |
 
-### Tabel 4: `topup_transactions` — Transaksi Top-Up
+### Tabel 4: `transactions` — Buku Besar Transaksi (Top-Up, dll)
 
 | Kolom | Tipe Data | Keterangan |
 |-------|-----------|------------|
-| `id` | UUID (Primary Key) | ID transaksi top-up |
-| `user_id` | UUID (FK → users) | Pengguna yang melakukan top-up |
-| `amount` | NUMERIC | Jumlah top-up dalam Rupiah |
+| `id` | UUID (Primary Key) | ID transaksi unik |
+| `user_id` | UUID (FK → users) | Pengguna yang terkait transaksi |
+| `amount` | NUMERIC | Jumlah nominal dalam Rupiah |
+| `transaction_type`| VARCHAR(20) | Jenis transaksi (contoh: `TOPUP`) |
 | `created_at` | TIMESTAMP | Waktu transaksi |
 
 ### Tabel 5: `parking_slots` — Status Slot Parkir
@@ -639,14 +640,14 @@ users (1) ──────── (N) rfid_cards
                         │
                         (N) parking_history
 
-users (1) ──────── (N) topup_transactions
+users (1) ──────── (N) transactions
 
 parking_slots (berdiri sendiri, diupdate oleh Vision Engine)
 ```
 
 - Satu **pengguna** bisa memiliki **banyak kartu RFID**
 - Satu **kartu RFID** bisa memiliki **banyak riwayat parkir**
-- Satu **pengguna** bisa memiliki **banyak transaksi top-up**
+- Satu **pengguna** bisa memiliki **banyak catatan transaksi (mis. top-up)**
 - Tabel **parking_slots** tidak terhubung langsung ke tabel lain — dikelola sepenuhnya oleh Vision Engine
 
 ## 6.3 Contoh Alur Data API

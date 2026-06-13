@@ -32,7 +32,7 @@ Sebagai pusat sinkronisasi, Supabase menangani data terkait secara relasional:
 Antarmuka pengguna berbasis aplikasi mobile menyediakan akses informasi kapan saja:
 *   **Dashboard Statistik**: Menampilkan angka sisa slot mobil dan motor yang tersedia.
 *   **Peta Parkir Interaktif**: Representasi visual denah parkir di mana slot kosong ditandai dengan warna hijau dan slot terisi ditandai dengan warna merah.
-*   **Pusat Pembayaran**: Memungkinkan pengguna melakukan pengecekan saldo dan riwayat transaksi parkir.
+*   **Pusat Pembayaran**: Memungkinkan pengguna melakukan pengecekan saldo dan riwayat transaksi (parkir maupun *top-up* saldo yang diproses via aplikasi Kasir/Admin Desktop).
 
 ## 3. Mekanisme Operasional: Metode Hybrid Tapping
 AutoPics menerapkan skema **Hybrid Tapping** (Dual Tapping) untuk memastikan integritas data dan keamanan:
