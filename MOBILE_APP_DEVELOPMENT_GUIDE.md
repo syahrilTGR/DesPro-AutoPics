@@ -49,8 +49,13 @@ Diperbarui oleh ESP32 saat pengguna melakukan *Tap-In* dan *Tap-Out* di gerbang 
 
 ### Fitur A: Live Slot & Peta Parkir Interaktif
 1.  Gunakan **Supabase Realtime** untuk *subscribe* ke tabel `parking_slots`.
-2.  Hitung jumlah baris yang memiliki `status == 'EMPTY'` untuk menampilkan **Total Slot Kosong** di dashboard aplikasi Anda.
-3.  Untuk halaman **Peta Parkir Visual**, gambarlah tata letak kotak-kotak slot parkir di layar Anda. Warnai:
+2.  Karena tabel tidak memiliki kolom `vehicle_type`, identifikasi jenis kendaraan menggunakan prefix pada `slot_id`:
+    *   **Prefix 'A' (Contoh: A1, A2)** = Mobil
+    *   **Prefix 'B' (Contoh: B1, B2)** = Motor
+3.  Hitung jumlah slot kosong secara terpisah untuk dasbor aplikasi:
+    *   **Sisa Slot Mobil**: Hitung baris dengan `status == 'EMPTY'` dan `slot_id` berawalan 'A'.
+    *   **Sisa Slot Motor**: Hitung baris dengan `status == 'EMPTY'` dan `slot_id` berawalan 'B'.
+4.  Untuk halaman **Peta Parkir Visual**, gambarlah tata letak kotak-kotak slot parkir di layar Anda. Warnai:
     *   **Hijau** jika `status == 'EMPTY'`.
     *   **Merah** jika `status == 'FULL'`.
 
@@ -66,6 +71,10 @@ Jika pengguna memiliki data terbaru di tabel `parking_history` dengan `status ==
 *   Gunakan SDK Supabase untuk menge-fetch tabel `users` untuk menampilkan `balance`.
 *   Tampilkan daftar histori dari tabel `parking_history` dimana statusnya `'COMPLETED'` dan urutkan berdasarkan `time_out` (Descending).
 
+### Fitur D: Top-Up Saldo (Simulasi Kasir)
+*   *Catatan Penting*: Pengisian saldo (Top-up) saat ini **tidak dilakukan langsung di aplikasi mobile**. 
+*   Top-up disimulasikan secara *offline* melalui terminal Admin (Kasir) yang akan melakukan UPDATE saldo ke database dan mencatatnya ke tabel `transactions`.
+*   **Tugas Aplikasi Mobile**: Anda dapat mem-fetch tabel `transactions` untuk membuat halaman **Riwayat Top-Up** terpisah bagi user. Tabel `transactions` memiliki skema: `id`, `user_id`, `amount`, `transaction_type` (selalu 'TOPUP'), dan `created_at`.
 ---
 
 ## 4. Tips & Best Practices untuk Mobile App Dev
