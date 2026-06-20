@@ -60,7 +60,7 @@ Buku ini ditujukan untuk **operator** yang bertanggung jawab menjalankan dan mem
 | No | Komponen | Jumlah | Fungsi |
 |----|----------|--------|--------|
 | 1 | ESP32 DevKit C V4 | 1 unit | Otak pengontrol gerbang (Gate Controller) |
-| 2 | ESP32-CAM (AI-Thinker) | 1 unit | Kamera pengawas area parkir |
+| 2 | USB Webcam / IP Camera | 1 unit | Kamera pengawas area parkir |
 | 3 | Sensor Ultrasonik HC-SR04 | 3 unit | Deteksi kendaraan di depan gerbang |
 | 4 | Modul RFID MFRC522 | 3 unit | Pembaca kartu identitas pengguna |
 | 5 | Micro Servo Motor | 3 unit | Penggerak palang pintu gerbang |
@@ -82,9 +82,9 @@ Buku ini ditujukan untuk **operator** yang bertanggung jawab menjalankan dan mem
 
 # BAB 2: Arsitektur Sistem
 
-> [!WARNING]
-> **Vision Engine - Status Belum Stabil**
-> Vision Engine saat ini masih menggunakan metode ROI Thresholding yang sangat sensitif terhadap perubahan cahaya. Sistem sedang dalam proses migrasi ke YOLOv8 + ByteTrack untuk deteksi yang lebih robust. Detail lengkap di: [REVISI_VISION_ENGINE_PLAN.md](file:///Volumes/Data%20Shared/Project/despro%20AutoPics/REVISI_VISION_ENGINE_PLAN.md).
+> [!TIP]
+> **Vision Engine - Sudah Stabil**
+> Vision Engine saat ini menggunakan **YOLOv8 + ByteTrack** untuk deteksi kendaraan secara real-time dengan ROI polygon-based. Konfigurasi slot tersimpan di `parking_slots.json`.
 
 ## 2.1 Lima Pilar Teknologi
 
@@ -102,30 +102,22 @@ ESP32 terhubung ke internet via WiFi dan berkomunikasi langsung dengan database 
 - Mencatat waktu masuk dan keluar kendaraan
 - Mengecek ketersediaan slot parkir
 
-### Pilar 2 — Visual Streamer (ESP32-CAM)
+### Pilar 2 — Vision Engine (Webcam + TestByte.py)
 
-ESP32-CAM adalah modul kamera nirkabel yang diletakkan di **posisi strategis atas** untuk mengawasi seluruh area parkir. Perangkat ini:
-- Menyiarkan gambar area parkir melalui HTTP server lokal (port 80)
-- Mendukung 3 resolusi: rendah (320×240), sedang (640×480), tinggi (800×600)
-- Mengirim sinyal UDP Beacon secara otomatis agar Vision Engine dapat menemukan IP-nya
+Vision Engine berjalan di **komputer/PC server** dengan kamera USB/IP Camera. Program ini:
+- Menangkap video real-time via OpenCV
+- Menggunakan **YOLOv8 + ByteTrack** untuk deteksi kendaraan dengan tracking ID
+- Menganalisis okupansi slot via polygon ROI (`parking_slots.json`)
+- Mengirimkan status slot ke Supabase secara real-time via background thread
 
-### Pilar 3 — Vision Engine (Python + OpenCV)
+### Pilar 3 — Mobile Application
 
-Vision Engine adalah program Python yang berjalan di **komputer/PC server**. Program ini:
-- Menerima streaming gambar dari ESP32-CAM
-- Menganalisis setiap slot parkir menggunakan metode **Region of Interest (ROI)**
-- Mendeteksi apakah slot terisi atau kosong berdasarkan perubahan visual
-- Mengirimkan hasil deteksi ke database Supabase secara real-time
+Aplikasi mobile yang menyediakan:
+- Dashboard statistik slot kosong/terisi
+- Peta parkir interaktif (slot hijau = kosong, merah = terisi)
+- Pusat pembayaran dan riwayat transaksi
 
-### Pilar 4 — Cloud Backend (Supabase)
-
-Supabase adalah pusat sinkronisasi data berbasis PostgreSQL yang menangani:
-- Status real-time setiap slot parkir (terisi/kosong)
-- Informasi akun pengguna (nama, kartu RFID, saldo)
-- Catatan riwayat parkir (waktu masuk, keluar, durasi, biaya)
-- Transaksi top-up saldo
-
-### Pilar 5 — Mobile Application *(dalam pengembangan)*
+### Pilar 4 — Hardware Storage (ESP32-CAM, dulu)
 
 Aplikasi mobile yang akan menyediakan:
 - Dashboard statistik slot kosong/terisi
@@ -729,7 +721,7 @@ Gunakan firmware test khusus untuk memverifikasi bahwa ketiga sensor RFID bekerj
    📡 EXIT_ALL (Ultrasonik 3): 2 cm  [ 🚨 OBJEK TERDETEKSI! <= 2 CM ]
    ```
 
-> 💡 Threshold deteksi pada firmware test adalah **2 cm**. Pada firmware utama (Gate Controller), threshold yang digunakan adalah **15 cm**.
+> 💡 Threshold deteksi pada firmware test adalah **2 cm**. Pada firmware utama (Gate Controller), deteksi menggunakan logika **Baseline Deviation** di mana sensor memantau jika jarak berubah > 1 cm dari jarak lantai awal (dinamis), bukan menggunakan nilai threshold statis.
 
 ## 7.3 Verifikasi Koneksi Database
 
@@ -847,7 +839,7 @@ A: Saat ini, pendaftaran dilakukan melalui script `seed_test_data.py` atau langs
 A: Ya. Tabel `rfid_cards` memungkinkan banyak kartu terhubung ke satu akun pengguna.
 
 **Q: Bagaimana cara menambah saldo pengguna?**  
-A: Saat ini dapat dilakukan langsung melalui dashboard Supabase dengan mengubah kolom `balance` di tabel `users`. Fitur top-up via aplikasi mobile akan tersedia di versi mendatang.
+A: Pengisian saldo (Top-up) dilakukan melalui aplikasi GUI Admin desktop (`python/admin_topup_gui.py`). Aplikasi ini akan memperbarui saldo di tabel `users` dan secara otomatis mencatat riwayat transaksi ke tabel `transactions`.
 
 ---
 

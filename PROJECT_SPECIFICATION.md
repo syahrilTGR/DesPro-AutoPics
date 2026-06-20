@@ -12,11 +12,11 @@ Sistem parkir miniatur otomatis yang mengintegrasikan kontrol mekanik (Gate Cont
 *   **Output**: 3x Servo Motor (Palang Pintu).
 *   **Logic**: Validasi akun, status, dan saldo secara realtime via REST API Supabase, kontrol gate non-blocking.
 
-### B. Visual Streamer (ESP32-CAM)
-*   **Tugas**: Mengambil gambar area parkir secara nirkabel dan menyiarkannya via HTTP server lokal (port 80) dalam berbagai resolusi (lo-res, mid-res, hi-res) untuk dianalisis oleh server.
+### B. Vision Input (USB Webcam / IP Camera)
+*   **Tugas**: Menyediakan video area parkir secara real-time ke komputer server melalui OpenCV capture.
 
-### C. Vision Engine (Python + OpenCV + PyTorch)
-*   **Tugas**: Membaca streaming gambar dari ESP32-CAM, melakukan segmentasi ROI (Region of Interest) pada koordinat slot (mobil/motor), menganalisis okupansi menggunakan akselerasi GPU (PyTorch), serta mengunggah status slot dan ringkasan ketersediaan ke Supabase secara realtime.
+### C. Vision Engine (Python + YOLOv8 + ByteTrack)
+*   **Tugas**: Menjalankan `python/TestByte.py`, melakukan deteksi kendaraan dengan YOLOv8 + ByteTrack, mengecek centroid kendaraan terhadap polygon ROI pada `python/parking_slots.json`, lalu mengunggah status slot ke Supabase secara real-time.
 
 ### D. User Interface (Mobile App)
 *   **Fitur**:
@@ -29,7 +29,7 @@ Sistem parkir miniatur otomatis yang mengintegrasikan kontrol mekanik (Gate Cont
 
 ## 2. Struktur Data Supabase (PostgreSQL) - AKTIF & SINKRON
 
-Struktur di bawah ini adalah data kontrak aktif yang digunakan oleh **ESP32 Gate Controller** (`src/main.cpp`) dan **Python Vision Engine** (`python/y.py`):
+Struktur di bawah ini adalah data kontrak aktif yang digunakan oleh **ESP32 Gate Controller** (`src/main.cpp`) dan **Python Vision Engine** (`python/TestByte.py`):
 
 ```json
 {
@@ -98,9 +98,11 @@ Struktur di bawah ini adalah data kontrak aktif yang digunakan oleh **ESP32 Gate
    * `status` *(string)*: Status parkir kendaraan (`"active"` / `"parked"` / `"left"`).
    * `parked_at` *(int)*: Unix epoch timestamp (dalam detik) ketika tap masuk gerbang sukses. Digunakan untuk kalkulasi biaya keluar.
 
-2. **Status Slot Parkir Visi Komputer (`/parkir/slots/{tipe_kendaraan}/{slot_id}`):**
-   * Diperbarui secara berkala oleh program Python (`python/y.py`).
-   * `terisi` *(boolean)*: `true` jika kendaraan terdeteksi terparkir di slot tersebut, `false` jika kosong.
+2. **Status Slot Parkir Visi Komputer (`parking_slots` table):**
+   * Diperbarui secara berkala oleh program Python (`python/TestByte.py`).
+   * `slot_id` *(string)*: ID slot numerik (`"1"` s/d `"14"`).
+   * `status` *(string)*: `"FULL"` jika kendaraan terdeteksi terparkir di slot tersebut, `"EMPTY"` jika kosong.
+   * `last_updated` *(timestamp)*: Waktu update terakhir dari Vision Engine.
 
 3. **Ringkasan Parkir (`/parkir/ringkasan/{tipe_kendaraan}`):**
    * Diperbarui oleh Python. Dipantau secara live oleh aplikasi mobile dan **ESP32** (via Firebase Stream `/parkir/ringkasan`).
@@ -115,10 +117,10 @@ Struktur di bawah ini adalah data kontrak aktif yang digunakan oleh **ESP32 Gate
 
 ## 3. Alur Kerja Integrasi Sistem (Hybrid Workflow)
 
-1.  **Vision Loop**: ESP32-CAM $\rightarrow$ Stream Video $\rightarrow$ Python Vision Engine $\rightarrow$ Analisis ROI GPU $\rightarrow$ Update Supabase `parking_slots`.
-2.  **Entry Gate**: Kendaraan terdeteksi ultrasonik $\rightarrow$ Tap RFID $\rightarrow$ ESP32 membaca sisa slot kosong di `/parkir/ringkasan` & validasi saldo di `/users/{UID}` $\rightarrow$ Jika OK, servo membuka palang, `status` diubah menjadi `"parked"`, dan mencatat `parked_at`.
-3.  **Exit Gate**: Kendaraan terdeteksi $\rightarrow$ Tap RFID $\rightarrow$ ESP32 mengambil `parked_at` $\rightarrow$ Menghitung selisih waktu harian $\rightarrow$ Potong saldo $\rightarrow$ Servo membuka palang, `status` diubah menjadi `"left"`.
-4.  **Card Registration**: Tap kartu belum terdaftar di gerbang fisik $\rightarrow$ ESP32 menulis UID dan waktu ke `/unregistered_taps/{GERBANG}` $\rightarrow$ Pengguna menekan tombol "Klaim" di aplikasi mobile $\rightarrow$ Aplikasi memindahkan UID tersebut ke `/users/{UID}` sebagai kartu aktif.
+1.  **Vision Loop**: Webcam / IP Camera $\rightarrow$ OpenCV Capture $\rightarrow$ Python `TestByte.py` $\rightarrow$ YOLOv8 + ByteTrack $\rightarrow$ Polygon ROI Check $\rightarrow$ Update Supabase `parking_slots`.
+2.  **Entry Gate**: Kendaraan terdeteksi ultrasonik $\rightarrow$ Tap RFID $\rightarrow$ ESP32 membaca sisa slot kosong dari Supabase `parking_slots` dan validasi saldo lewat tabel `users` / `rfid_cards` $\rightarrow$ Jika OK, servo membuka palang lalu mencatat sesi baru di `parking_history` dengan status `"PARKED"`.
+3.  **Exit Gate**: Kendaraan terdeteksi $\rightarrow$ Tap RFID $\rightarrow$ ESP32 mengambil sesi aktif dari `parking_history` $\rightarrow$ Menghitung durasi parkir dan biaya $\rightarrow$ Potong saldo user $\rightarrow$ Update `parking_history` menjadi `"COMPLETED"` lalu servo membuka palang.
+4.  **Mobile Monitoring**: Aplikasi mobile membaca `parking_slots` secara real-time $\rightarrow$ menampilkan 7 slot mobil (`1`-`7`) dan 7 slot motor (`8`-`14`) beserta status `FULL/EMPTY`.
 
 ---
 *Dokumen teknis acuan pengembangan sistem AutoPics terbaru dan telah disinkronisasikan secara penuh.*

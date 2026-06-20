@@ -49,12 +49,12 @@ Diperbarui oleh ESP32 saat pengguna melakukan *Tap-In* dan *Tap-Out* di gerbang 
 
 ### Fitur A: Live Slot & Peta Parkir Interaktif
 1.  Gunakan **Supabase Realtime** untuk *subscribe* ke tabel `parking_slots`.
-2.  Karena tabel tidak memiliki kolom `vehicle_type`, identifikasi jenis kendaraan menggunakan prefix pada `slot_id`:
-    *   **Prefix 'A' (Contoh: A1, A2)** = Mobil
-    *   **Prefix 'B' (Contoh: B1, B2)** = Motor
+2.  Karena tabel tidak memiliki kolom `vehicle_type`, identifikasi jenis kendaraan ditentukan berdasarkan *range* angka pada `slot_id`:
+    *   **Mobil**: `slot_id` bernilai **1 hingga 7** (Contoh: "1", "2", "3")
+    *   **Motor**: `slot_id` bernilai **8 ke atas** (Contoh: "8", "9", "10")
 3.  Hitung jumlah slot kosong secara terpisah untuk dasbor aplikasi:
-    *   **Sisa Slot Mobil**: Hitung baris dengan `status == 'EMPTY'` dan `slot_id` berawalan 'A'.
-    *   **Sisa Slot Motor**: Hitung baris dengan `status == 'EMPTY'` dan `slot_id` berawalan 'B'.
+    *   **Sisa Slot Mobil**: Hitung baris dengan `status == 'EMPTY'` dan `slot_id` berada di *range* **1 - 7**.
+    *   **Sisa Slot Motor**: Hitung baris dengan `status == 'EMPTY'` dan `slot_id` bernilai **8 ke atas**.
 4.  Untuk halaman **Peta Parkir Visual**, gambarlah tata letak kotak-kotak slot parkir di layar Anda. Warnai:
     *   **Hijau** jika `status == 'EMPTY'`.
     *   **Merah** jika `status == 'FULL'`.
@@ -64,8 +64,10 @@ Jika pengguna memiliki data terbaru di tabel `parking_history` dengan `status ==
 1.  Ambil nilai `time_in` (format ISO8601).
 2.  Buat timer berkala di HP (tiap 1 menit):
     $$\text{Durasi Menit} = \frac{\text{Waktu Sekarang (Timestamp HP)} - \text{time\_in (Timestamp)}}{60}$$
-3.  **Estimasi Biaya:** Tarif yang diterapkan di gerbang saat ini adalah **Rp 5.000,- per menit/jam (tergantung demo)**. Rumus estimasi biaya di aplikasi:
-    $$\text{Estimasi Biaya} = \text{Durasi Menit} \times \text{Tarif Parkir}$$
+3.  **Estimasi Biaya:** Tarif yang diterapkan di gerbang saat ini disesuaikan dengan jenis kendaraan:
+    *   **Motor**: Rp 2.000 (1 jam pertama) + Rp 30 / menit berikutnya.
+    *   **Mobil**: Rp 5.000 (1 jam pertama) + Rp 80 / menit berikutnya.
+    *(Catatan: Durasi minimal dihitung 1 menit dan tarif dasar berlaku penuh meskipun parkir hanya beberapa menit).*
 
 ### Fitur C: Riwayat & Saldo User
 *   Gunakan SDK Supabase untuk menge-fetch tabel `users` untuk menampilkan `balance`.

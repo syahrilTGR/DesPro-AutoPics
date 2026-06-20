@@ -10,34 +10,25 @@ AutoPics adalah solusi manajemen parkir pintar yang menggabungkan efisiensi hard
 
 Sistem ini telah dioptimasi untuk performa maksimal pada perangkat edge:
 
--   **📡 Smart Discovery**: Python secara otomatis mencari IP ESP32-CAM via UDP Beacon. Jika koneksi terputus, ESP32 akan kembali berteriak (Beacon) secara otomatis setelah 10 detik.
--   **💾 IP Memory Fallback**: Python mengingat IP terakhir yang berhasil terkoneksi (`last_ip.txt`), memastikan koneksi instan meskipun discovery gagal.
--   **⚡ Stable HTTP Streaming**: Menggunakan metode *Keep-Alive* yang jauh lebih stabil daripada TCP Push konvensional, mencegah "buffer bloat" dan lag.
--   **📉 Dynamic FPS Limiter**: Dibatasi pada **5 FPS** secara presisi di sisi client untuk menjaga suhu ESP32 tetap dingin dan menghemat bandwidth tanpa mengorbankan akurasi deteksi.
--   **🔥 Supabase Cloud Sync**: Status slot parkir diupdate secara instan ke cloud via REST API dan dapat dipantau langsung via aplikasi mobile.
+-   **⚡ YOLOv8 + ByteTrack Real-time Detection**: Deteksi kendaraan secara akurat dengan tracking ID unik untuk setiap kendaraan.
+-   **🅿️ Polygon-based ROI Parking Slots**: Slot parkir didefinisikan via polygon (4 titik) di `parking_slots.json`, deteksi centroid otomatis.
+-   **🔥 Supabase Cloud Sync**: Status slot parkir diupdate secara instan ke cloud via REST API batch update.
+-   **📉 Background Thread Sender**: Batch update supabase non-blocking, hemat bandwidth.
 
 ---
 
 ## 🏗️ Arsitektur Sistem
 
-1.  **Main Controller (ESP32)**: Mengontrol gerbang fisik (Servo), sensor ultrasonik, dan pembaca RFID (RC522).
-2.  **Visual Monitoring (ESP32-CAM)**: Melakukan streaming visual area parkir secara efisien.
-3.  **Vision Engine (Python & OpenCV)**: Unit pemrosesan AI yang melakukan deteksi okupansi slot parkir menggunakan metode **Region of Interest (ROI)**.
-4.  **Cloud Backend (Supabase)**: Pusat data relasional (PostgreSQL) untuk status slot, entitas pengguna, dan pencatatan riwayat parkir.
-5.  **Mobile App**: Dashboard interaktif untuk pengguna mencari tempat parkir kosong.
+1.  **Gate Controller (ESP32)**: Mengontrol gerbang fisik (Servo), sensor ultrasonik, dan pembaca RFID (RC522).
+2.  **Vision Engine (Python & YOLOv8)**: Unit pemrosesan AI menggunakan YOLOv8 + ByteTrack untuk deteksi kendaraan, memeriksa occupancy slot parkir secara real-time.
+3.  **Cloud Backend (Supabase)**: Pusat data relasional (PostgreSQL) untuk status slot, entitas pengguna, dan pencatatan riwayat parkir.
+4.  **Mobile App**: Dashboard interaktif untuk pengguna mencari tempat parkir kosong.
 
 ---
 
 ## 🛠️ Instalasi & Persiapan
 
-### 1. ESP32-CAM (Vision Firmware)
--   Buka folder proyek di **PlatformIO**.
--   **Upload Command**:
-    -   *Standard*: `pio run -e esp32cam -t upload`
-    -   *Windows*: `%USERPROFILE%\.platformio\penv\Scripts\pio run -e esp32cam -t upload`
-    -   *Mac*: `~/.platformio/penv/bin/pio run -e esp32cam -t upload`
-
-### 2. ESP32 Gate Controller (Physical Firmware)
+### 1. ESP32 Gate Controller (Physical Firmware)
 -   Buka folder proyek di **PlatformIO**.
 -   **Upload Command**:
     -   *Standard*: `pio run -e esp32dev -t upload`
@@ -60,16 +51,16 @@ Sistem ini telah dioptimasi untuk performa maksimal pada perangkat edge:
     ```bash
     pip install -r requirements.txt
     ```
--   *(Opsional)* Anda dapat memasukkan API Key Supabase Anda langsung ke dalam baris kode di `python/y.py` agar sistem dapat login secara resmi.
+-   *(Opsional)* Anda dapat memasukkan API Key Supabase Anda langsung ke dalam baris kode di `python/TestByte.py` agar sistem dapat login secara resmi.
 -   Jalankan engine:
     ```bash
-    python python/y.py
+    python python/TestByte.py
     ```
 
 ---
 
 ## ⚙️ Konfigurasi ROI (Slot Parkir)
-Anda dapat mengatur koordinat slot parkir langsung melalui file `slots_esp32.json`. Sistem akan secara otomatis melakukan monitoring pada area yang telah didefinisikan tersebut.
+Anda dapat mengatur koordinat slot parkir langsung melalui file `parking_slots.json`. Sistem akan secara otomatis melakukan monitoring pada area yang telah didefinisikan tersebut. Jalankan `parking_roi_config.py` untuk membuat polygon slot secara visual.
 
 ---
 
@@ -79,7 +70,7 @@ Untuk memastikan kelancaran pengembangan di masa depan, berikut adalah beberapa 
 
 ### 1. Masalah Upload di macOS (Termios Error)
 *   **Masalah**: Flashing firmware pada macOS seringkali mengalami kegagalan `termios.error: (22, 'Invalid argument')` karena *driver* serial USB tidak mendukung penggantian kecepatan baud secara dinamis oleh `esptool.py`.
-*   **Solusi**: Kecepatan unggah dikunci secara stabil pada **`upload_speed = 115200`** di dalam `platformio.ini` untuk lingkungan `esp32dev` dan `esp32cam`.
+*   **Solusi**: Kecepatan unggah dikunci secara stabil pada **`upload_speed = 115200`** di dalam `platformio.ini` untuk lingkungan `esp32dev`.
 
 ### 2. Jaringan & Koneksi HTTPS (Bypass SSL)
 *   **Masalah**: ESP32 menggunakan koneksi aman HTTPS (SSL) untuk berkomunikasi dengan Supabase. Koneksi bawaan `HTTPClient` sering memakan RAM hingga 40KB+ dan rentan gagal melakukan jabat tangan (SSL Handshake).
@@ -90,8 +81,8 @@ Untuk memastikan kelancaran pengembangan di masa depan, berikut adalah beberapa 
 *   **Solusi**: Kita memisahkan tugas *Polling* slot kosong ke **Core 0**, sedangkan *loop* pembacaan sensor ultrasonik dan RFID di **Core 1**. Sebagai pengaman jalurnya, digunakan sistem penguncian **FreeRTOS Mutex** (`httpMutex`). Kini Core 0 dan Core 1 bergantian secara rapi saat mengirim *request* HTTP.
 
 ### 4. Optimasi Memori RAM (Heap) & Jarak Threshold
-*   **Arus & Memori**: Memori buffer respons Firebase dibatasi sebesar **1KB** (`setResponseSize(1024)`) untuk mencegah fragmentasi RAM di ESP32. Urutan penulisan Firebase diselesaikan *sebelum* servo berputar untuk menjaga chip WiFi dari kejutan penurunan tegangan (*voltage dip*).
-*   **Sensor Jarak**: Batas jarak pemicu sensor ultrasonik miniatur diatur pada **$\le$ 3 cm**.
+*   **Arus & Memori**: Komunikasi HTTP dengan Supabase dioptimalkan untuk mencegah fragmentasi RAM di ESP32. Proses HTTP *request* diselesaikan *sebelum* servo berputar untuk menjaga chip WiFi dari kejutan penurunan tegangan (*voltage dip*).
+*   **Sensor Jarak**: Deteksi kendaraan menggunakan sistem **Baseline Deviation**, di mana pintu akan merespons jika jarak pembacaan sensor berubah lebih dari 1 cm dari jarak lantai/baseline default (`abs(dist - g.defaultDist) > 1`). Ini jauh lebih adaptif terhadap fluktuasi sensor daripada sekadar batas statis.
 
 ---
 

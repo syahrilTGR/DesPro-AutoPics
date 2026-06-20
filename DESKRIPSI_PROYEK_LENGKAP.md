@@ -13,14 +13,14 @@ Unit ini bertindak sebagai otak mekanis di gerbang parkir. ESP32 mengontrol:
 *   **Modul RFID (RC522)**: Sebagai alat otentikasi kartu identitas pengguna yang terhubung ke akun digital.
 *   **Micro Servo Motor**: Sebagai aktuator untuk menggerakkan palang pintu fisik berdasarkan validasi data.
 
-### 2.2 Visual Monitoring (ESP32-CAM)
-Berbeda dengan sistem konvensional yang membutuhkan sensor di setiap slot, AutoPics menggunakan **ESP32-CAM** yang diletakkan di posisi strategis. Perangkat ini secara nirkabel menyiarkan (*stream*) visual seluruh area parkir ke unit pemrosesan server.
+### 2.2 Vision Engine (Webcam + YOLOv8 + ByteTrack)
+Berbeda dengan sistem konvensional yang membutuhkan sensor di setiap slot, AutoPics menggunakan **USB Webcam / IP Camera** yang terhubung ke komputer server. Program Vision Engine (`python/TestByte.py`) menangkap video real-time dan menggunakan **YOLOv8 + ByteTrack** untuk deteksi kendaraan dengan tracking ID. Slot parkir didefinisikan via polygon ROI di `python/parking_slots.json`.
 
-### 2.3 Vision Engine (Python & OpenCV)
-Unit pemrosesan citra ini berjalan pada server/PC. Menggunakan library OpenCV, perangkat lunak ini menerapkan metode **Region of Interest (ROI)**:
-*   Sistem melakukan *labeling* pada koordinat spesifik yang mewakili tiap slot parkir.
-*   Algoritma mendeteksi perubahan intensitas objek dalam kotak ROI untuk menentukan status okupansi slot.
-*   Hasil analisis dikirimkan secara instan ke database untuk memperbarui status slot tanpa intervensi manusia.
+### 2.3 Vision Engine (Python & YOLOv8)
+Unit pemrosesan citra ini berjalan pada server/PC menggunakan `python/TestByte.py`. Program ini menggunakan **YOLOv8 + ByteTrack** untuk deteksi kendaraan:
+*   Slot parkir didefinisikan via polygon ROI (4 titik) di `parking_slots.json`.
+*   Algoritma mendeteksi centroid kendaraan dan mengecek apakah berada dalam polygon slot.
+*   Hasil analisis dikirimkan secara instan ke Supabase via background thread.
 
 ### 2.4 Cloud Backend (Supabase PostgreSQL)
 Sebagai pusat sinkronisasi, Supabase menangani data terkait secara relasional:
@@ -53,7 +53,3 @@ monitor ESP32 Gate, perintahnya adalah:
 
 bash
 ~/.platformio/penv/bin/pio device monitor -p /dev/cu.usbserial-0001 -b 115200
-Dan untuk ESP32-CAM:
-
-bash
-~/.platformio/penv/bin/pio device monitor -p /dev/cu.usbserial-A5069RR4 -b 115200

@@ -33,10 +33,10 @@ Bertugas di pintu gerbang utama untuk menangani akses masuk dan keluar kendaraan
 *   **Peran**: Mengidentifikasi identitas pengguna melalui kartu RFID fisik, melakukan validasi saldo minimum, dan merekam *timestamp* masuk/keluar untuk kalkulasi biaya secara otomatis.
 *   **Karakteristik**: Hanya mencatat status pengguna secara makro (`active`, `parked`, `left`). ESP32 **tidak mengetahui** di slot mana kendaraan tersebut diparkir secara fisik.
 
-### 📷 B. Vision Engine (Python + OpenCV - `y.py`) — *Visual Occupancy Detector*
-Bertugas mengawasi seluruh area parkir dari atas menggunakan kamera visual tunggal (**ESP32-CAM**).
-*   **Peran**: Menentukan status keterisian slot secara spesifik (**A1, A2, A3, A4, A5**) secara otomatis tanpa sensor fisik di setiap slot.
-*   **Karakteristik**: Menggunakan teknik **Region of Interest (ROI)** berbasis akselerasi GPU (PyTorch/OpenCV). Ketika kendaraan mainan menempati suatu slot, AI mendeteksi perubahan visual dan langsung memperbarui database Firebase (`terisi: true`).
+### 📷 B. Vision Engine (Python + OpenCV/ Ultralytics - `TestByte.py`) — *Visual Occupancy Detector*
+Bertugas mengawasi seluruh area parkir dari atas menggunakan kamera visual (webcam/USB).
+*   **Peran**: Menentukan status keterisian slot secara spesifik (**1-14**) secara otomatis tanpa sensor fisik di setiap slot.
+*   **Karakteristik**: Menggunakan **YOLOv8 + ByteTrack** untuk deteksi kendaraan, ROI polygon-based. Ketika kendaraan terdeteksi di slot, AI mendeteksi centroid terhadap polygon dan memperbarui database Supabase (`status: FULL/EMPTY`).
 
 ---
 
