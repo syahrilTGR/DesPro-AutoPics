@@ -1,0 +1,28 @@
+# ============================================================
+# ByteTrack Custom Config — Fix fuse_score + Minimasi ID Loncat
+# Simpan di folder yang sama dengan TestByte.py
+# ============================================================
+
+tracker_type: bytetrack
+
+# Threshold confidence track aktif
+track_high_thresh: 0.5
+
+# Threshold confidence track kandidat
+track_low_thresh: 0.1
+
+# Threshold confidence untuk objek baru diterima
+new_track_thresh: 0.6
+
+# Berapa frame objek boleh hilang sebelum ID-nya dihapus
+# Naikkan untuk kamera parkiran agar ID tidak cepat mati
+track_buffer: 60
+
+# Threshold IoU matching antar frame
+match_thresh: 0.8
+
+# Minimum hits sebelum track ditampilkan
+min_box_area: 10
+
+# ⬇️ Parameter wajib di Ultralytics versi terbaru
+fuse_score: True
