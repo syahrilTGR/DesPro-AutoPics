@@ -222,8 +222,11 @@ void processEntrance(Gate &g, String uid, unsigned long now, bool isMotor) {
     return;
   }
 
+  // Jenis kendaraan ditentukan dari gate mana kartu di-tap
+  String vType = isMotor ? "Motor" : "Mobil";
+
   // 1. Cek apakah RFID terdaftar dan ambil data User
-  String rfidRes = execGET("/rest/v1/rfid_cards?uid=eq." + uid + "&select=user_id,vehicle_type,users(balance)");
+  String rfidRes = execGET("/rest/v1/rfid_cards?uid=eq." + uid + "&select=user_id,users(balance)");
   if (rfidRes == "[]" || rfidRes.length() == 0) {
     Serial.printf("❌ Kartu belum terdaftar! UID: %s\n", uid.c_str());
     return;
@@ -232,7 +235,6 @@ void processEntrance(Gate &g, String uid, unsigned long now, bool isMotor) {
   JsonDocument docRfid;
   deserializeJson(docRfid, rfidRes);
   int balance = docRfid[0]["users"]["balance"];
-  String vType = docRfid[0]["vehicle_type"].as<String>();
 
   // Cek saldo minimal (misal Rp 5000)
   if (balance < 5000) {
@@ -247,14 +249,14 @@ void processEntrance(Gate &g, String uid, unsigned long now, bool isMotor) {
     return;
   }
 
-  // 3. Catat Entrance ke parking_history
-  Serial.println("🔄 Mencatat histori masuk ke Supabase...");
+  // 3. Catat Entrance ke parking_history (termasuk vehicle_type dari gate)
+  Serial.printf("🔄 Mencatat histori masuk (%s) ke Supabase...\n", vType.c_str());
   String timeIn = getISO8601Time();
-  String payload = "{\"rfid_uid\":\"" + uid + "\",\"status\":\"PARKED\",\"time_in\":\"" + timeIn + "\"}";
+  String payload = "{\"rfid_uid\":\"" + uid + "\",\"status\":\"PARKED\",\"vehicle_type\":\"" + vType + "\",\"time_in\":\"" + timeIn + "\"}";
   String postRes = execPOST("/rest/v1/parking_history", payload);
   
   if (postRes.length() > 0) {
-    Serial.printf("✅ Entrance Sukses. UID: %s, Saldo: Rp %d\n", uid.c_str(), balance);
+    Serial.printf("✅ Entrance Sukses. UID: %s (%s), Saldo: Rp %d\n", uid.c_str(), vType.c_str(), balance);
     openGate(g, now);
   } else {
     Serial.println("⚠️ Gagal mencatat histori entrance.");
@@ -263,7 +265,8 @@ void processEntrance(Gate &g, String uid, unsigned long now, bool isMotor) {
 
 void processExit(Gate &g, String uid, unsigned long now) {
   // 1. Ambil session parkir aktif & data saldo user
-  String histRes = execGET("/rest/v1/parking_history?rfid_uid=eq." + uid + "&status=eq.PARKED&select=id,time_in,rfid_cards(user_id,vehicle_type,users(balance))");
+  // vehicle_type dibaca dari parking_history (dicatat saat masuk berdasarkan gate)
+  String histRes = execGET("/rest/v1/parking_history?rfid_uid=eq." + uid + "&status=eq.PARKED&select=id,time_in,vehicle_type,rfid_cards(user_id,users(balance))");
   if (histRes == "[]" || histRes.length() == 0) {
     Serial.printf("❌ Kendaraan tidak terdaftar sedang parkir atau kartu salah: %s\n", uid.c_str());
     return;
@@ -273,8 +276,8 @@ void processExit(Gate &g, String uid, unsigned long now) {
   deserializeJson(docHist, histRes);
   String histId = docHist[0]["id"].as<String>();
   String timeInStr = docHist[0]["time_in"].as<String>();
+  String vType = docHist[0]["vehicle_type"].as<String>();  // Dari histori, bukan rfid_cards
   String userId = docHist[0]["rfid_cards"]["user_id"].as<String>();
-  String vType = docHist[0]["rfid_cards"]["vehicle_type"].as<String>();
   int balance = docHist[0]["rfid_cards"]["users"]["balance"];
 
   // 2. Kalkulasi Durasi & Tarif
@@ -288,11 +291,11 @@ void processExit(Gate &g, String uid, unsigned long now) {
 
   int cost = 0;
   if (vType == "Motor") {
-    cost = 2000; // Base 1 jam
-    if (duration_minutes > 60) cost += (duration_minutes - 60) * 30;
+    cost = 2000; // Base 1 menit
+    if (duration_minutes > 1) cost += (duration_minutes - 1) * 30;
   } else {
-    cost = 5000; // Base 1 jam
-    if (duration_minutes > 60) cost += (duration_minutes - 60) * 80;
+    cost = 5000; // Base 1 menit
+    if (duration_minutes > 1) cost += (duration_minutes - 1) * 80;
   }
 
   if (balance >= cost) {

@@ -16,10 +16,10 @@ HEADERS = {
 
 # ── Data Pengguna & Kartu ──
 users_data = [
-    {"name": "Awang", "balance": 50000, "uid_raw": "A9:36:97:11", "vehicle": "Motor"},
-    {"name": "Syahril", "balance": 50000, "uid_raw": "19:01:92:11", "vehicle": "Mobil"},
-    {"name": "Refi", "balance": 50000, "uid_raw": "09:D9:7D:11", "vehicle": "Motor"},
-    {"name": "Noval", "balance": 50000, "uid_raw": "29:90:03:07", "vehicle": "Mobil"},
+    {"name": "Awang",   "balance": 50000, "uid_raw": "A9:36:97:11"},
+    {"name": "Syahril", "balance": 50000, "uid_raw": "19:01:92:11"},
+    {"name": "Refi",    "balance": 50000, "uid_raw": "09:D9:7D:11"},
+    {"name": "Noval",   "balance": 50000, "uid_raw": "29:90:03:07"},
 ]
 
 def seed_database():
@@ -45,7 +45,6 @@ def seed_database():
                 "uid": clean_uid,
                 "user_id": user_id,
                 "card_name": f"Kartu {user['name']}",
-                "vehicle_type": user["vehicle"],
             }
             resp_rfid = requests.post(f"{SUPABASE_URL}/rest/v1/rfid_cards", json=rfid_payload, headers=HEADERS)
             
