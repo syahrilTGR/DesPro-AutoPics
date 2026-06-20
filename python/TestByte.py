@@ -11,19 +11,24 @@ import requests
 # ============================================================
 # 🎯 LOAD MODEL
 # ============================================================
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 print("🚀 Loading model...")
-model = YOLO('bos.pt')
+model = YOLO(os.path.join(SCRIPT_DIR, 'bos.pt'))
 print("✅ Model loaded!")
 
 # ============================================================
 # ⚙️  KONFIGURASI GLOBAL
 # ============================================================
-TRACKER_CONFIG   = "bytetrack.yaml"
+import torch
+
+TRACKER_CONFIG   = os.path.join(SCRIPT_DIR, "bytetrack.yaml")
 CONFIDENCE       = 0.25
 IOU              = 0.45
 TRAIL_LENGTH     = 40
-DEVICE           = 'cuda'
-PARKING_SLOTS_FILE = "parking_slots.json"   # hasil dari parking_roi_config.py
+DEVICE           = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"⚙️  Using device: {DEVICE.upper()}")
+PARKING_SLOTS_FILE = os.path.join(SCRIPT_DIR, "parking_slots.json")   # hasil dari parking_roi_config.py
 
 # ============================================================
 # 🅿️  LOAD ROI SLOT PARKIR
@@ -96,7 +101,7 @@ class SupabaseSender:
 
                 if last_terisi != terisi:
                     self._queue[sid] = {
-                        "slot_id": str(sid),
+                        "slot_id": sid,
                         "status": "FULL" if terisi else "EMPTY",
                         "last_updated": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                     }
@@ -315,7 +320,7 @@ def test_image(image_path):
 # ============================================================
 # 🎥 MODE 2: WEBCAM REAL-TIME + BYTETRACK + PARKING ROI
 # ============================================================
-def test_webcam_bytetrack(source=0):
+def test_webcam_bytetrack(source=1):
     print(f"\n📷 Starting: {source}")
     cap = cv2.VideoCapture(source)
 
@@ -369,7 +374,7 @@ def test_webcam_bytetrack(source=0):
         prev_status = status_map.copy()
 
         # ── Update Supabase (hanya jika status berubah) ──
-        supabase_status = {str(sid): (sid in status_map) for sid in [s["id"] for s in PARKING_SLOTS]}
+        supabase_status = {sid: (sid in status_map) for sid in [s["id"] for s in PARKING_SLOTS]}
         sb_sender.update(supabase_status, len(PARKING_SLOTS))
 
         # ── HUD ──
@@ -453,7 +458,7 @@ def test_video_bytetrack(video_path, output_path="hasil_tracking.mp4"):
         annotated, active, status_map = process_tracked_frame(frame, results, track_history, all_ids)
 
         # ── Update Supabase ──
-        supabase_status = {str(sid): (sid in status_map) for sid in [s["id"] for s in PARKING_SLOTS]}
+        supabase_status = {sid: (sid in status_map) for sid in [s["id"] for s in PARKING_SLOTS]}
         sb_sender.update(supabase_status, len(PARKING_SLOTS))
 
         occupied_count = sum(1 for s in PARKING_SLOTS if s["occupied"])
