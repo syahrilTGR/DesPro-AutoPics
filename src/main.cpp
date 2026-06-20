@@ -25,7 +25,6 @@ MFRC522 rfidMob(SS_MOB, RST_PIN);
 MFRC522 rfidExit(SS_EXIT, RST_PIN);
 
 // --- KONFIGURASI SISTEM ---
-const int DISTANCE_THRESHOLD = 15;
 const unsigned long GATE_HOLD_TIME = 5000;
 const unsigned long SCAN_INTERVAL = 100;
 const unsigned long POLL_INTERVAL = 5000;
@@ -165,10 +164,11 @@ void pollParkingSlots() {
     deserializeJson(doc, response);
     for (JsonObject slot : doc.as<JsonArray>()) {
       String slotId = slot["slot_id"].as<String>();
-      if (slotId.startsWith("B")) {
-        countMotor++;
-      } else {
+      int slotNum = slotId.toInt();
+      if (slotNum >= 1 && slotNum <= 7) {
         countMobil++;
+      } else {
+        countMotor++;
       }
     }
   }
