@@ -80,7 +80,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `parking_history` (rfid_uid, slot_id, time_in, time_out, status, total_fee)
   - `parking_slots` (slot_id, status, last_updated)
   - `transactions` (user_id, amount, transaction_type)
-  - `unregistered_taps` (temporary store for new RFID cards)
+  - `unregistered_taps` (temporary store for new RFID cards - planned, not yet implemented in ESP32)
 
 * **Vision Engine** – Python script `python/TestByte.py` captures video, runs YOLOv8 + ByteTrack, maps detected vehicle centroids to slot polygons defined in `python/parking_slots.json`, and updates the `parking_slots` table in real-time. Drop to `Y_http_backup.py` if HTTPS sync fails.
 
@@ -98,14 +98,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Path | Purpose |
 |------|---------|
 | `platformio.ini` | PlatformIO build configuration for ESP32 firmware. |
-| `autopics/app/build.gradle.kts` | Android Gradle wrapper (top-level). |
-| `autopics/app/src/main/java/com/example/autopics/SupabaseHelper.kt` | Supabase client wrapper used by both app and firmware logic. |
-| `python/TestByte.py` | Main vision loop (YOLOv8 + ByteTrack). |
+| `src/main.cpp` | **Gate controller firmware** — RFID, ultrasonic, servo, Supabase REST. |
+| `src/main-espcam.cpp` | Camera controller firmware (AI detection). |
+| `python/TestByte.py` | **Primary vision loop** — YOLOv8 + ByteTrack + slot mapping (GPU). |
+| `python/y.py` | Legacy vision loop — deprecated. |
+| `python/parking_slots.json` | Slot polygon ROI coordinates for detection mapping. |
+| `python/bytetrack.yaml` | ByteTrack tracker configuration. |
+| `python/bos.pt` | YOLOv8 trained model (CUDA). |
 | `simulator/simulate_gate.py` | CLI for gate entry/exit events. |
+| `simulator/simulate_all.py` | Full end-to-end simulation (auto mode). |
+| `simulator/supabase_client.py` | Shared Supabase client for simulator scripts. |
+| `check_db.py` | Check Supabase DB schema. |
+| `reset_db.py` | Reset Supabase database. |
+| `seed_test_data.py` | Seed test users & RFID cards. |
+| `PANDUAN_OPERASIONAL.md` | **Complete operational manual** (36KB) — hardware wiring, SOP, troubleshooting. |
 | `PROJECT_SPECIFICATION.md` | Full system spec, data model, and workflow description. |
 | `README.md` (root) | High-level project overview. |
-| `MOBILE_APP_DEVELOPMENT_GUIDE.md` | Android Studio setup and common commands. |
+| `MOBILE_APP_DEVELOPMENT_GUIDE.md` | Android Studio setup and common commands (app not yet in repo). |
 | `TEST_PLAN.md` | Manual test steps for Android integration testing. |
+| `DESKRIPSI_PROYEK_LENGKAP.md` | Full project description (Indonesian). |
+| `DEMO_PANDUAN.md` | Demo walkthrough guide. |
+| `ANDROID_UPDATE_NOTES.md` | Android app update notes. |
 
 ## Development Notes
 
@@ -118,5 +131,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   1. Query `rfid_cards` where `user_id = ownerId` → obtain `uid`.
   2. Query `parking_history` where `rfid_uid = uid`.
   Update the Kotlin data class and query accordingly.
+- **Critical bug fix** – `main.cpp.bak_preventGateOpen` references `rfid` as a pointer (`MFRC522* rfid`) instead of reference (`MFRC522 rfid`) in Gate struct. This causes RFID sensors to malfunction. Use `src/main.cpp` which correctly assigns RFID modules by reference for MOTOR_IN (rfidMot), MOBIL_IN (rfidMob), and EXIT_ALL (rfidExit).
 
 ---
