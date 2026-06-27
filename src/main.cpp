@@ -46,7 +46,7 @@ int availSlotsMotor = 0; // Slot kosong motor
 int availSlotsMobil = 0;  // Slot kosong mobil
 
 Gate gts[3] = {
-  {"MOTOR_IN", 32, 33, 13, Servo(), false, 0, false, &rfidMot, 5,  0, false},
+  {"MOTOR_IN", 32, 33, 13, Servo(), false, 0, false, nullptr, 5,  0, false},
   {"MOBIL_IN", 27, 26, 12, Servo(), false, 0, false, &rfidMob, 10, 0, false},
   {"EXIT_ALL", 16, 17, 14, Servo(), false, 0, true,  &rfidExit, 10, 0, false}
 };
@@ -156,10 +156,16 @@ String execPATCH(String endpoint, String jsonPayload) {
 // --- LOGIKA PARKIR ---
 void pollParkingSlots() {
   String response = execGET("/rest/v1/parking_slots?status=eq.EMPTY&select=slot_id");
+  
+  // Jika string kosong (error SSL/Jaringan), abaikan dan jangan ubah angka slot terakhir
+  if (response.length() == 0) {
+    return;
+  }
+
   int countMotor = 0;
   int countMobil = 0;
   
-  if (response.length() > 0 && response != "[]") {
+  if (response != "[]") {
     JsonDocument doc;
     deserializeJson(doc, response);
     for (JsonObject slot : doc.as<JsonArray>()) {
@@ -206,6 +212,21 @@ String getUID(MFRC522* rfid) {
   return uidStr;
 }
 
+String classifyVehicleType() {
+  long dMot = getD(gts[0].trig, gts[0].echo);  // MOTOR_IN ultrasonic
+  long dMob = getD(gts[1].trig, gts[1].echo);  // MOBIL_IN ultrasonic
+
+  long diffMot = (dMot != 999) ? abs(dMot - gts[0].defaultDist) : 0;
+  long diffMob = (dMob != 999) ? abs(dMob - gts[1].defaultDist) : 0;
+
+  Serial.printf("📏 Classify: MotorLane diff=%ld, MobilLane diff=%ld\n", diffMot, diffMob);
+
+  if (diffMot > diffMob) return "Motor";
+  if (diffMob > diffMot) return "Mobil";
+  
+  return "Mobil";  // Default fallback jika seri atau tidak ada diff (0)
+}
+
 void openGate(Gate &g, unsigned long now) {
   Serial.printf("🚀 %s: OPEN\n", g.name);
   g.sv.write(90);
@@ -215,15 +236,14 @@ void openGate(Gate &g, unsigned long now) {
   g.stableEmptyTime = 0;
 }
 
-void processEntrance(Gate &g, String uid, unsigned long now, bool isMotor) {
-  int avail = isMotor ? availSlotsMotor : availSlotsMobil;
+void processEntrance(Gate &g, String uid, unsigned long now, String vType) {
+  int avail = (vType == "Motor") ? availSlotsMotor : availSlotsMobil;
   if (avail <= 0) {
     Serial.printf("⚠️ %s: FULL! (Tunggu slot kosong)\n", g.name);
     return;
   }
 
-  // Jenis kendaraan ditentukan dari gate mana kartu di-tap
-  String vType = isMotor ? "Motor" : "Mobil";
+  // vType determined from ultrasonic classification
 
   // 1. Cek apakah RFID terdaftar dan ambil data User
   String rfidRes = execGET("/rest/v1/rfid_cards?uid=eq." + uid + "&select=user_id,users(balance)");
@@ -344,13 +364,12 @@ void setup() {
   digitalWrite(SS_EXIT, HIGH);
 
   SPI.begin();
-  rfidMot.PCD_Init();
-  delay(50);
   rfidMob.PCD_Init();
   delay(50);
   rfidExit.PCD_Init();
   delay(50);
-  Serial.println("RFID Init OK");
+  // rfidMot di-skip (hardware broken, pointer sudah nullptr di gts[0])
+  Serial.println("RFID Init OK (Mobil + Exit only)");
 
   for (int i = 0; i < 3; i++) {
     pinMode(gts[i].trig, OUTPUT);
@@ -409,8 +428,11 @@ void loop() {
         if (g.isExit) {
           processExit(g, detectedUid, now);
         } else {
-          bool isMotorGate = (strcmp(g.name, "MOTOR_IN") == 0);
-          processEntrance(g, detectedUid, now, isMotorGate);
+          // Single RFID at MOBIL_IN — classify vehicle type from ultrasonics
+          String vType = classifyVehicleType();
+          // Open correct gate servo based on classification
+          Gate &targetGate = (vType == "Motor") ? gts[0] : gts[1];
+          processEntrance(targetGate, detectedUid, now, vType);
         }
       }
     } else {
